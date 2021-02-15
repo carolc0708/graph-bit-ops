@@ -45,6 +45,18 @@ void launch_array(FILE* cf, float* array, unsigned array_size)
         fscanf(cf, "%f", &array[i]); // better keep the input as 1D
 }
 
+// load bsr metadata
+void load_bsr(FILE* cf, unsigned* array, unsigned* array_size) {
+    if (cf == NULL)
+    {
+        fprintf(stderr, "NULL pointer to the network configuration file.\n");
+        exit(1);
+    }
+    fscanf(cf, "%u", array_size);
+    for (int i=0; i<*array_size; i++)
+        fscanf(cf, "%u", &array[i]);
+}
+
 // validate output
 void validate(float* output, unsigned output_height, unsigned output_width) {
     for (int i=0; i<output_height; i++) {
