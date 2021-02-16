@@ -8,7 +8,7 @@ using namespace std;
 __global__ void bfs(MulAParam* p)
 {
     //grid_group grid = this_grid();
-    MatMul(p);
+    bmv32_sparse(p);
     //grid.sync();
 
 }
