@@ -189,11 +189,11 @@ int main(int argc, char* argv[])
     cusparseScsr2bsr(handle, dirA, nrows, ncols, csr_descr, csrVal,
                     csrRowPtr, csrColInd, blocksize, bsr_descr, bsrVal, bsrRowPtr, bsrColInd);
     printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
-    float* h_bsrVal = (float*)malloc(sizeof(float)*blocksize*blocksize*nblocks);
-    cudaMemcpy(h_bsrVal, bsrVal, sizeof(float)*blocksize*blocksize*nblocks, cudaMemcpyDeviceToHost);
-    printmat(h_bsrVal, nblocks, blocksize);
-    free(h_bsrVal);
-//
+//    float* h_bsrVal = (float*)malloc(sizeof(float)*blocksize*blocksize*nblocks);
+//    cudaMemcpy(h_bsrVal, bsrVal, sizeof(float)*blocksize*blocksize*nblocks, cudaMemcpyDeviceToHost);
+//    printmat(h_bsrVal, nblocks, blocksize);
+//    free(h_bsrVal);
+
 //    int* h_bsrRowPtr = (int*)malloc(sizeof(int) *(nblockrows+1));
 //    cudaMemcpy(h_bsrRowPtr, bsrRowPtr, sizeof(int) *(nblockrows+1), cudaMemcpyDeviceToHost);
 //    printf("rowptr: \n"); printind(h_bsrRowPtr, (nblockrows+1));
@@ -310,54 +310,44 @@ int main(int argc, char* argv[])
     cudaMemcpy(result_cusparsebsrspmvfloat, y, ncols * 1 * sizeof(float), cudaMemcpyDeviceToHost);
     printf("baselinevec: \n"); printresvec(result_cusparsebsrspmvfloat, ncols);
 
-//    // ============================================= cuSPARSE csr spmv-float
-//    // CUSPARSE APIs
-//    cusparseSpMatDescr_t matA;
-//    cusparseDnVecDescr_t vecX, vecY;
-//    void* dBuffer = NULL;
-//    size_t bufferSize = 0;
-//
-//    // Create sparse matrix A in CSR format
-//    cusparseCreateCsr(&matA, nrows, ncols, nnz, csrRowPtr, csrColInd, csrVal,
-//                    CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F);
-//
-//    // create dense vector
-//    float *dX, *dY;
-//    cudaMalloc((void**)&dX, sizeof(float)*(nblockrows * blocksize));
-//    cudaMemcpy(dX, fB, sizeof(float)*ncols, cudaMemcpyHostToDevice);  // [ncols] to [nb * blocksize] (paddings) is not moved
-//    cudaMalloc((void**)&dY, sizeof(float)*(nblockrows * blocksize));
-//    cudaMemset(dY, 0, sizeof(float)*ncols);
-//
-//    // Create dense vector X
-//    cusparseCreateDnVec(&vecX, ncols, dX, CUDA_R_32F);
-//    // Create dense vector y
-//    cusparseCreateDnVec(&vecY, nrows, dY, CUDA_R_32F);
-//
-//    // allocate an external buffer if needed
-//    cusparseSpMV_bufferSize(handle, transA, &alpha, matA, vecX, &beta, vecY,
-//                            CUDA_R_32F, CUSPARSE_MV_ALG_DEFAULT, &bufferSize);
-//    cudaMalloc(&dBuffer, bufferSize);
-//
-//    // execute SpMV
-//    cudaEventCreate(&start);
-//    cudaEventCreate(&stop);
-//    // ------
-//    cudaEventRecord(start);
-//    for (int i=0; i<TEST_TIMES; i++) {
-//        cusparseSpMV(handle, transA, &alpha, matA, vecX, &beta, vecY,
-//                        CUDA_R_32F, CUSPARSE_MV_ALG_DEFAULT, dBuffer);
-//    }
-//    cudaEventRecord(stop);
-//    cudaEventSynchronize(stop);
-//
-//    milliseconds = 0;
-//    cudaEventElapsedTime(&milliseconds,start,stop);
-//    double cusparsecsrspmvfloat_time = (milliseconds*1e3)/double(TEST_TIMES);
-//    // ------
-//
-//    float* result_cusparsecsrspmvfloat = (float*)malloc(ncols * 1 * sizeof(float));
-//    cudaMemcpy(result_cusparsecsrspmvfloat, vecY, ncols * 1 * sizeof(float), cudaMemcpyDeviceToHost);
+    // ============================================= cuSPARSE csr spmv-float
+    cusparseHandle_t handle_csr;
+    cusparseMatDescr_t mat_A;
+    cusparseStatus_t cusparse_status;
 
+    cusparseCreate(&handle_csr);
+    cusparseCreateMatDescr(&mat_A);
+    cusparseSetMatType(mat_A, CUSPARSE_MATRIX_TYPE_GENERAL);
+    cusparseSetMatIndexBase(mat_A, CUSPARSE_INDEX_BASE_ZERO);
+
+    // create dense vector
+    float *dX, *dY;
+    cudaMalloc((void**)&dX, sizeof(float)*(nblockrows * blocksize));
+    cudaMemcpy(dX, fB, sizeof(float)*ncols, cudaMemcpyHostToDevice);  // [ncols] to [nb * blocksize] (paddings) is not moved
+    cudaMalloc((void**)&dY, sizeof(float)*(nblockrows * blocksize));
+    cudaMemset(dY, 0, sizeof(float)*ncols);
+
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    // ------
+    cudaEventRecord(start);
+    for (int i=0; i<TEST_TIMES; i++) {
+        cusparseScsrmv(handle_csr, CUSPARSE_OPERATION_NON_TRANSPOSE, nrows, ncols, nnz,
+                    &alpha, mat_A, csrVal, csrRowPtr, csrColInd, dX, &beta, dY);
+    }
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds,start,stop);
+    double cusparsecsrspmvfloat_time = (milliseconds*1e3)/double(TEST_TIMES);
+    // ------
+
+    float* result_cusparsecsrspmvfloat = (float*)malloc(ncols * 1 * sizeof(float));
+    cudaMemcpy(result_cusparsecsrspmvfloat, dY, ncols * 1 * sizeof(float), cudaMemcpyDeviceToHost);
+    printf("csrspmvvec: \n"); printresvec(result_cusparsecsrspmvfloat, ncols);
 
     // ============================================= BSTC-64 bsr bmv
 
@@ -373,26 +363,22 @@ int main(int argc, char* argv[])
 
     printf("CuSPARSE BSR SpMV-float: %.3lf\n", cusparsebsrspmvfloat_time);
     printf("BSR BMV-32: %.3lf\n", bmv32_time);
-    //printf("CuSPARSE CSR SpMV-float: %.3lf\n", cusparsecsrspmvfloat_time);
+    printf("CuSPARSE CSR SpMV-float: %.3lf\n", cusparsecsrspmvfloat_time);
 
     // free descr and handle memory
     cusparseDestroyMatDescr(csr_descr);
-    csr_descr = 0;
     cusparseDestroyMatDescr(bsr_descr);
-    bsr_descr = 0;
     cusparseDestroy(handle);
-    handle = 0;
 
     // free cusparse bsr spmv
     cudaFree(x);
     cudaFree(y);
 
-//    // free cusparse csr spmv
-//    cusparseDestroySpMat(matA);
-//    cusparseDestroyDnVec(vecX);
-//    cusparseDestroyDnVec(vecY);
-//    cudaFree(dX);
-//    cudaFree(dY);
+    // free cusparse csr spmv
+    cusparseDestroyMatDescr(mat_A);
+    cusparseDestroy(handle_csr);
+    cudaFree(dX);
+    cudaFree(dY);
 
     // free mem
     free(h_csrRowPtr);
@@ -411,6 +397,6 @@ int main(int argc, char* argv[])
     // free all results
     free(result_cusparsebsrspmvfloat);
     free(result_bsrbmv32);
-    //free(result_cusparsecsrspmvfloat);
+    free(result_cusparsecsrspmvfloat);
 
 }
