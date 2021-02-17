@@ -216,18 +216,18 @@ int main(int argc, char* argv[])
         else B[i] = (x > 0.5) ? 1 : 0;
     }
     printf("initialize a vector with size %d x 1\n", (nblockrows * blocksize));
-    printf("orivec: \n"); printvec(B, (nblockrows * blocksize));
+    //printf("orivec: \n"); printvec(B, (nblockrows * blocksize));
 
     // copy to cuda
 	float *fB, *fC;
-    unsigned *uC;
-    ullong *ullC;
+//    unsigned *uC;
+//    ullong *ullC;
 
 	cudaMalloc(&fB, (nblockrows * blocksize) * 1 * sizeof(float));
 	cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
 
-	cudaMalloc(&uC, (nblockrows * blocksize) * 1 * sizeof(unsigned));
-	cudaMalloc(&ullC, (nblockrows * blocksize) * 1 * sizeof(unsigned long long));
+//	cudaMalloc(&uC, (nblockrows * blocksize) * 1 * sizeof(unsigned));
+//	cudaMalloc(&ullC, (nblockrows * blocksize) * 1 * sizeof(unsigned long long));
 
 	cudaMemcpy(fB, B, (nblockrows * blocksize) * 1 * sizeof(float), cudaMemcpyHostToDevice);
 
@@ -274,7 +274,7 @@ int main(int argc, char* argv[])
 
     float* result_bsrbmv32 = (float*)malloc(ncols * 1 * sizeof(float)); // don't care padding result
     cudaMemcpy(result_bsrbmv32, fC, ncols * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-    printf("resultvec: \n"); printresvec(result_bsrbmv32, ncols);
+    //printf("resultvec: \n"); printresvec(result_bsrbmv32, ncols);
 
 
     // ============================================= cuSPARSE bsr spmv-float 32
@@ -308,7 +308,7 @@ int main(int argc, char* argv[])
 
     float* result_cusparsebsrspmvfloat = (float*)malloc(ncols * 1 * sizeof(float));
     cudaMemcpy(result_cusparsebsrspmvfloat, y, ncols * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-    printf("baselinevec: \n"); printresvec(result_cusparsebsrspmvfloat, ncols);
+    //printf("baselinevec: \n"); printresvec(result_cusparsebsrspmvfloat, ncols);
 
     // ============================================= cuSPARSE csr spmv-float
     cusparseHandle_t handle_csr;
@@ -347,11 +347,9 @@ int main(int argc, char* argv[])
 
     float* result_cusparsecsrspmvfloat = (float*)malloc(ncols * 1 * sizeof(float));
     cudaMemcpy(result_cusparsecsrspmvfloat, dY, ncols * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-    printf("csrspmvvec: \n"); printresvec(result_cusparsecsrspmvfloat, ncols);
+    //printf("csrspmvvec: \n"); printresvec(result_cusparsecsrspmvfloat, ncols);
 
     // ============================================= BSTC-64 bsr bmv
-
-    // ============================================= cuSPARSE bsr spmv-float 64
 
     // ============================================= BSTC-32 bsr bmm
 
@@ -361,8 +359,8 @@ int main(int argc, char* argv[])
     //printf("CuSPARSE BSR SpMV-float (baseline) success: %d\n", check_result(result_cusparsebsrspmvfloat, result_cusparsebsrspmvfloat, ncols));
     //printf("BSR BMV-32 success: %d\n", check_result(result_bsrbmv32, result_cusparsebsrspmvfloat, ncols));
 
-    printf("CuSPARSE BSR SpMV-float: %.3lf\n", cusparsebsrspmvfloat_time);
     printf("BSR BMV-32: %.3lf\n", bmv32_time);
+    printf("CuSPARSE BSR SpMV-float: %.3lf\n", cusparsebsrspmvfloat_time);
     printf("CuSPARSE CSR SpMV-float: %.3lf\n", cusparsecsrspmvfloat_time);
 
     // free descr and handle memory
@@ -391,8 +389,8 @@ int main(int argc, char* argv[])
 
     cudaFree(fB);
     cudaFree(fC);
-    cudaFree(uC);
-    cudaFree(ullC);
+//    cudaFree(uC);
+//    cudaFree(ullC);
 
     // free all results
     free(result_cusparsebsrspmvfloat);
