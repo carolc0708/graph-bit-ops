@@ -66,10 +66,10 @@ mv coAuthorsCiteseer.tar.gz coAuthorsCiteseer
 mv coAuthorsCiteseer/coAuthorsCiteseer.mtx ../
 
 # coPapersDBLP
-wget https://suitesparse-collection-website.herokuapp.com/MM/DIMACS10/coAuthorsDBLP.tar.gz
-tar zxvf coAuthorsDBLP.tar.gz
-mv coAuthorsDBLP.tar.gz coAuthorsDBLP
-mv coAuthorsDBLP/coAuthorsDBLP.mtx ../
+wget https://suitesparse-collection-website.herokuapp.com/MM/DIMACS10/coPapersDBLP.tar.gz
+tar zxvf coPapersDBLP.tar.gz
+mv coPapersDBLP.tar.gz coPapersDBLP
+mv coPapersDBLP/coPapersDBLP.mtx ../
 
 # cit-Patents
 wget https://www.cise.ufl.edu/research/sparse/MM/SNAP/cit-Patents.tar.gz
