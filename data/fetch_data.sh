@@ -3,6 +3,7 @@ wget http://nrvis.com/download/data/soc/soc-orkut.zip
 unzip soc-orkut.zip
 mkdir soc-orkut
 mv soc-orkut.zip readme.txt soc-orkut
+sed -i '1s/^/%/' soc-orkut.mtx
 mv soc-orkut.mtx ../
 
 # soc-LiveJournal1
