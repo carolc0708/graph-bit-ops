@@ -177,7 +177,7 @@ int main(int argc, char* argv[])
     cudaMalloc((void**)&tA, nblocks * blocksize * sizeof(unsigned));
 
 //    if (nblocks > 100000) { // Large Matrices: batch csr2bsr & pack A at the same time
-        csr2bsr_batch(h_csrRowPtr, h_csrColInd, nrows, ncols, nnz,
+        csr2bsr_batch_32(h_csrRowPtr, h_csrColInd, nrows, ncols, nnz,
                       bsrRowPtr, bsrColInd, tA, blocksize, nblockrows, nblocks);
 
 //    } else { // Small Matrices: csr2bsr & pack A
@@ -225,13 +225,18 @@ int main(int argc, char* argv[])
 
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
-    printf("CEIL(1): %d, CEIL(nblockrows * blocksize): %d\n",CEIL(1),CEIL(nblockrows * blocksize));
+
+    // get grid dim
+    double nbr = cbrt((double)nblockrows);
+    int blockdim = (int)ceil(nbr);
+    printf("cbrt(nblockrows) = %d\n", blockdim);
+    dim3 grid(blockdim, blockdim, blockdim);
+
     // ------
     cudaEventRecord(start);
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-        bmv32_sparse<int, float><<<dim3(CEIL(1), CEIL(nblockrows * blocksize)), 32>>>(tA, tB, fC, blocksize, nblocks, 1,
-                                                                                    bsrRowPtr, bsrColInd, nblockrows, nblocks);
+        bmv32_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
     }
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);

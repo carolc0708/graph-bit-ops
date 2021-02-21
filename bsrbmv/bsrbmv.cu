@@ -241,25 +241,15 @@ __global__ void bmv32_sparse(const unsigned* __restrict__ A, const unsigned* __r
 {
     GET_LANEID;
 
-    const unsigned bx = blockIdx.x; // 1
-    const unsigned by = blockIdx.y; // nblockrow
-//    if (by == 0 && laneid == 0) printf("!!!!!");
-//    if (by == 0 && laneid == 0) {
-//        for(int i=0; i<nblockrows+1; i++) printf("%d ", rowptr[i]);
-//        printf("\n");
-//        for(int i=0; i<nblocks; i++) printf("%d ", colind[i]);
-//        printf("\n");
-//        for(int j=0; j<32; j++) { for(unsigned i = 1 << 31; i > 0; i = i / 2)
-//        { (A[32*0+j]&i)?printf("1"):printf("0"); } printf("\n"); }
-//    }
+    const unsigned bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
 
     // load
-    int row_start = rowptr[blockIdx.y]; // 0 32 64 . . . 991
-    int row_end = rowptr[blockIdx.y+1]; // 32 64 96 . . . 991 1022
+    int row_start = rowptr[bx]; // 0 32 64 . . . 991
+    int row_end = rowptr[bx+1]; // 32 64 96 . . . 991 1022
 
     const unsigned* Asub = &(A[row_start*32]); // block is in continuous layout
     const unsigned* Bsub = &(B[0]); // 0, when it is mv
-    T* Csub = &(C[blockIdx.y*32]);
+    T* Csub = &(C[bx*32]);
     register unsigned Cm[1] = {0}; // allocate 1 register
 
     // compute
