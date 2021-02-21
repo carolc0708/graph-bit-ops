@@ -4,6 +4,7 @@
 * in directory `/bsrbmv`
 * `make`
 * `./bsrbmv test.mtx` or `./bsrbmv {/path/to/matrix/file}`
+*  using `cuda/10.1.243`
 
 ## BMM (result not verified)
 * in directory `/bmm`

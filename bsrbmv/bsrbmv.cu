@@ -243,25 +243,27 @@ __global__ void bmv32_sparse(const unsigned* __restrict__ A, const unsigned* __r
 
     const unsigned bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
 
-    // load
-    int row_start = rowptr[bx]; // 0 32 64 . . . 991
-    int row_end = rowptr[bx+1]; // 32 64 96 . . . 991 1022
+    if (bx < nblockrows) {
+        // load
+        int row_start = rowptr[bx]; // 0 32 64 . . . 991
+        int row_end = rowptr[bx+1]; // 32 64 96 . . . 991 1022
 
-    const unsigned* Asub = &(A[row_start*32]); // block is in continuous layout
-    const unsigned* Bsub = &(B[0]); // 0, when it is mv
-    T* Csub = &(C[bx*32]);
-    register unsigned Cm[1] = {0}; // allocate 1 register
+        const unsigned* Asub = &(A[row_start*32]); // block is in continuous layout
+        const unsigned* Bsub = &(B[0]); // 0, when it is mv
+        T* Csub = &(C[bx*32]);
+        register unsigned Cm[1] = {0}; // allocate 1 register
 
-    // compute
-    // if that row has more than 1 col block
-    for (int i=row_start; i<row_end; i++) {
-        Cm[0] = 0;
-        unsigned r0 = Asub[(i-row_start)*32+laneid]; // block is in continuous layout
-        unsigned r1 = Bsub[(colind[i])]; // only first row is required
+        // compute
+        // if that row has more than 1 col block
+        for (int i=row_start; i<row_end; i++) {
+            Cm[0] = 0;
+            unsigned r0 = Asub[(i-row_start)*32+laneid]; // block is in continuous layout
+            unsigned r1 = Bsub[(colind[i])]; // only first row is required
 
-        Cm[0] += __popc(r0 & r1);
-        // store
-        Csub[laneid] += (T)(Cm[0]); //Csub[laneid] = (T)(Cm[0]>0);
+            Cm[0] += __popc(r0 & r1);
+            // store
+            Csub[laneid] += (T)(Cm[0]); //Csub[laneid] = (T)(Cm[0]>0);
+        }
     }
 }
 
