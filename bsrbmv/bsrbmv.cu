@@ -243,7 +243,7 @@ __global__ void bmv32_sparse(const unsigned* __restrict__ A, const unsigned* __r
 
     const unsigned bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
 
-    if (bx < nblockrows) {
+    if (bx < nblockrows + 1) {
         // load
         int row_start = rowptr[bx]; // 0 32 64 . . . 991
         int row_end = rowptr[bx+1]; // 32 64 96 . . . 991 1022
