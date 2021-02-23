@@ -29,8 +29,7 @@ void bin(unsigned n)
         (n & i) ? printf("1") : printf("0");
 }
 
-// weight should be col-major packing, layout is 32 * (32*numofblocks)
-// input should be row-major packing, layout is whatever it is originally
+// C = A * A^T => col-major(A) * col-major(A) using rowbyrow model
 
 // col-major packing bit 32
 template <typename T>
@@ -106,39 +105,59 @@ __global__ void ToBit64Row(const T* __restrict__  A, ullong* B, const int A_heig
 }
 
 // bsr bmm32 no padding
-// A (bsr matrix) * B (vector) = C (vector)
-// col-bin(32 x (blocksize x nblocks)) * row-bin((nblockrows x nblocks) x 1) = (nblockrow x nblocks) x 1
+// Cik = Sum(A_ij * B_jk)
+// A (bsr matrix) * B (bsr matrix) = C (one float number)
+// originally consider to implement C in coo format, but that is not straightforward
+// col-bin(32 x (blocksize x nblocks)) x col-bin(32 x (blocksize x nblocks))
 template <typename Index, typename T>
-__global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __restrict__ B,
-            T* C, const int A_height, const int A_width, const int B_width,
-            const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+__global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+            const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+            const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
             const Index nblockrows, const Index nblocks)
 {
-    const unsigned bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
-    if (bx < nblockrows + 1) {
+    const int bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
+    if (bx < nblockrows) {
         GET_LANEID;
+        T* Csub = &C[0];
 
         // load
-        int row_start = rowptr[bx]; // 0 32 64 . . . 991
-        int row_end = rowptr[bx+1]; // 32 64 96 . . . 991 1022
+        int A_row_start = A_rowptr[bx]; // 0 32 64 . . . 991
+        int A_row_end = A_rowptr[bx+1]; // 32 64 96 . . . 991 1022
+        const unsigned* Asub = &(A[A_row_start*32]); // block is in continuous layout
+        for (int i=A_row_start; i<A_row_end; i++) {
+            unsigned r0 = Asub[(i-A_row_start)*32+laneid]; // <--
 
-        const unsigned* Asub = &(A[row_start*32]); // block is in continuous layout
-        const unsigned* Bsub = &(B[0]); // 0, when it is mv
-        T* Csub = &(C[bx*32]);
-        register unsigned Cm[1] = {0}; // allocate 1 register
+            int A_col = A_colind[i];
+            int B_row_start = B_rowptr[A_col];
+            int B_row_end = B_rowptr[A_col+1];
+            const unsigned* Bsub = &(B[B_row_start*32]);
+            for (int j=B_row_start; j<B_row_end; j++) {
+                unsigned r1 = Bsub[(j-B_row_start)*32+laneid]; // <--
+                int B_col = B_colind[j];
+                register int Cm[32] = {0};
 
-        // compute
-        // if that row has more than 1 col block
-        for (int i=row_start; i<row_end; i++) {
-            Cm[0] = 0;
-            unsigned r0 = Asub[(i-row_start)*32+laneid]; // block is in continuous layout
-            unsigned r1 = Bsub[(colind[i])]; // only first row is required
+                /* bmm */
+                #pragma unroll
+                for (int k=0; k<32; k++)
+                {
+                    unsigned r2 = __shfl(r1, k); //from lane-j, r1 of matrix B
 
-            Cm[0] += __popc(r0 & r1);
-            // store
-            Csub[laneid] += (T)(Cm[0]); //Csub[laneid] = (T)(Cm[0]>0);
-        }
-    }
+                    // should be protected by critical section !!!
+                    Cm[k] += __popc(r0 & r2);
+                }
+                /* bmm */
+
+                // store
+                //C[bx*32+laneid][B_col*32+k] += Cm[k];
+                __syncthreads();
+                int sum = 0;
+                for (int i=0; i<32; i++) sum += Cm[i];
+                atomicAdd(Csub+bx, sum);
+                __syncthreads();
+
+            } // j in [B_row_start ... B_row_end]
+        } // i in [A_row_start ... A_row_end]
+    } // if bx < nblockrows + 1
 }
 
 // bsr bmv64 no padding
@@ -150,7 +169,7 @@ __global__ void bmm64_sparse(const ullong* __restrict__ A, const ullong* __restr
                             const Index nblockrows, const Index nblocks)
 {
     const unsigned bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
-    if (bx < nblockrows + 1) {
+    if (bx < nblockrows) {
         GET_LANEID;
 
         // load
@@ -212,5 +231,13 @@ __global__ void tril_csr(const Index* A_rowptr, const Index* A_colind, const T* 
     // nvals_
     C_rowptr[A_nrows] -= remove;
     C_nnz[0] = A_nnz - remove;
+}
+
+/* Extended method, non optimized */
+__global__ void reuduceSum(const int *gArr, int arraySize, int *gOut) {
+    gOut[0] = 0;
+    for (int i=0; i<arraySize; i++) {
+        gOut[0] += gArr[i];
+    }
 }
 

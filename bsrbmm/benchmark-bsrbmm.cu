@@ -1,7 +1,7 @@
 #include <iostream>
 #include <sys/time.h>
 
-#define TEST_TIMES 5 // do not test more than 1 time for now (vector not clean)
+#define TEST_TIMES 1 // do not test more than 1 time for now (vector not clean)
 using namespace std;
 
 #include <cuda.h>
@@ -161,150 +161,7 @@ int main32(int argc, char* argv[])
     cudaMemcpy(csrColInd, h_csrColInd, sizeof(int) * nnz, cudaMemcpyHostToDevice);
     cudaMemcpy(csrVal, h_csrVal, sizeof(float) * nnz, cudaMemcpyHostToDevice);
 
-	// transform from csr to bsr using cuSPARSE
-//	int* bsrRowPtr, *bsrColInd;
-//	float* bsrVal;
-//	int blocksize = 32;
-//	int mb = (nrows + blocksize-1)/blocksize;
-//    int nb = (ncols + blocksize-1)/blocksize;
-//    int nblockrows = mb;
-//
-//	// cuSPARSE API metadata setup
-//    cusparseMatDescr_t csr_descr = 0;
-//    cusparseCreateMatDescr(&csr_descr);
-//    cusparseSetMatType(csr_descr,CUSPARSE_MATRIX_TYPE_GENERAL);
-//    cusparseSetMatIndexBase(csr_descr,CUSPARSE_INDEX_BASE_ZERO);
-//    cusparseMatDescr_t bsr_descr = 0;
-//    cusparseCreateMatDescr(&bsr_descr);
-//    cusparseSetMatType(bsr_descr, CUSPARSE_MATRIX_TYPE_GENERAL);
-//    cusparseSetMatIndexBase(bsr_descr, CUSPARSE_INDEX_BASE_ZERO);
-//    cudaStream_t streamId = 0;
-//    cusparseHandle_t handle = 0;
-//    cusparseCreate(&handle);
-//    cusparseSetStream(handle, streamId);
-//    cusparseDirection_t dirA = CUSPARSE_DIRECTION_COLUMN;
-//
-//    // csr2bsr in column-major order, estimate first
-//    int nblocks;
-//
-//    cudaMalloc((void**)&bsrRowPtr, sizeof(int) *(nblockrows+1));
-//    cusparseXcsr2bsrNnz(handle, dirA, nrows, ncols, csr_descr,
-//                        csrRowPtr, csrColInd, blocksize, bsr_descr, bsrRowPtr, &nblocks);
-//    cudaMalloc((void**)&bsrColInd, sizeof(int)*nblocks);
-//    printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
-
-    // packed matrix
-//    unsigned* tA;
-//    cudaMalloc((void**)&tA, nblocks * blocksize * sizeof(unsigned));
-
-//    if (nblocks > 100000) { // Large Matrices: batch csr2bsr & pack A at the same time
-//        csr2bsr_batch_32(h_csrRowPtr, h_csrColInd, nrows, ncols, nnz,
-//                      bsrRowPtr, bsrColInd, tA, blocksize, nblockrows, nblocks);
-
-//    } else { // Small Matrices: csr2bsr & pack A
-//       cudaMalloc((void**)&bsrVal, sizeof(float)*(blocksize*blocksize)*nblocks);
-//       cusparseScsr2bsr(handle, dirA, nrows, ncols, csr_descr, csrVal,
-//                    csrRowPtr, csrColInd, blocksize, bsr_descr, bsrVal, bsrRowPtr, bsrColInd);
-//
-//      // pack A
-//      ToBit32Col<float><<<dim3(1, nblocks), 32>>>(bsrVal, tA, blocksize, nblocks * blocksize); // sparse matrix
-//
-//    }
-
-	// time measurement setup -----------------------------------
-	cudaEvent_t start, stop;
-	float milliseconds = 0;
-
-    // ============================================= BSTC-32 bsr bmm
-//    // init C
-//    float *fC;
-//    cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
-//    cudaMemset(fC, 0, (nblockrows * blocksize) * 1 * sizeof(float));
-//
-//    cudaEventCreate(&start);
-//    cudaEventCreate(&stop);
-//
-//    // get grid dim
-//    double nbr = cbrt((double)nblockrows);
-//    int blockdim = (int)ceil(nbr);
-//    printf("cbrt(nblockrows) = %d\n", blockdim);
-//    dim3 grid(blockdim, blockdim, blockdim);
-//
-//    // ------
-//    cudaEventRecord(start);
-//    for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
-//
-//        bmv32_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
-//    }
-//    cudaEventRecord(stop);
-//    cudaEventSynchronize(stop);
-//    milliseconds = 0;
-//    cudaEventElapsedTime(&milliseconds,start,stop);
-//    double bmv32_time = (milliseconds*1e3)/double(TEST_TIMES);
-//
-//    cudaFree(tA);
-//    cudaFree(tB);
-//    // ------
-//
-//    float* result_bsrbmv32 = (float*)malloc(nrows * 1 * sizeof(float)); // don't care padding result
-//    cudaMemcpy(result_bsrbmv32, fC, nrows * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-//    //printf("result_bsrbmv32: \n"); printvec(result_bsrbmv32, ncols);
-//    printf("nnz in vec: %d\n", countnnzinvec(result_bsrbmv32, nrows));
-
-    // ============================================= cuSPARSE bsr spmm-float 32
-    // y = α ∗ op ( A ) ∗ x + β ∗ y
-//    // allocate vector x and vector y large enough for bsrmv
-//    float *x, *y;
-//    cudaMalloc((void**)&x, sizeof(float)*(nblockrows * blocksize));
-//    cudaMemcpy(x, fB, sizeof(float)*ncols, cudaMemcpyHostToDevice);  // [ncols] to [nb * blocksize] (paddings) is not moved
-//    cudaMalloc((void**)&y, sizeof(float)*(nblockrows * blocksize));
-//    cudaMemset(y, 0, sizeof(float)*ncols);
-//
-//    // perform bsrmv
-//    float alpha = 1.0, beta = 0.0;
-//    cusparseOperation_t transA = CUSPARSE_OPERATION_NON_TRANSPOSE;
-//
-//    cudaEventCreate(&start);
-//    cudaEventCreate(&stop);
-//    // ------
-//    cudaEventRecord(start);
-//    for (int i=0; i<TEST_TIMES; i++) {
-//        cusparseSbsrmv(handle, dirA, transA, mb, nb, nblocks, &alpha,
-//                    bsr_descr, bsrVal, bsrRowPtr, bsrColInd, blocksize, x, &beta, y);
-//    }
-//    cudaEventRecord(stop);
-//    cudaEventSynchronize(stop);
-//
-//    milliseconds = 0;
-//    cudaEventElapsedTime(&milliseconds,start,stop);
-//    double cusparsebsrspmvfloat_time = (milliseconds*1e3)/double(TEST_TIMES);
-//    // ------
-//
-//    float* result_cusparsebsrspmvfloat = (float*)malloc(ncols * 1 * sizeof(float));
-//    cudaMemcpy(result_cusparsebsrspmvfloat, y, ncols * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-//    //printf("baselinevec: \n"); printresvec(result_cusparsebsrspmvfloat, ncols);
-
-    // ============================================= cuSPARSE csr spmm-float
-    // setup cusparse metadata
-    cusparseHandle_t handle_csr;
-    cusparseCreate(&handle_csr);
-
-    cusparseMatDescr_t A_descr;
-    cusparseCreateMatDescr(&A_descr);
-    cusparseSetMatType(A_descr, CUSPARSE_MATRIX_TYPE_GENERAL);
-    cusparseSetMatIndexBase(A_descr, CUSPARSE_INDEX_BASE_ZERO);
-
-    cusparseMatDescr_t B_descr;
-    cusparseCreateMatDescr(&B_descr);
-    cusparseSetMatType(B_descr, CUSPARSE_MATRIX_TYPE_GENERAL);
-    cusparseSetMatIndexBase(B_descr, CUSPARSE_INDEX_BASE_ZERO);
-
-    cusparseMatDescr_t C_descr;
-    cusparseCreateMatDescr(&C_descr);
-    cusparseSetMatType(C_descr, CUSPARSE_MATRIX_TYPE_GENERAL);
-    cusparseSetMatIndexBase(C_descr, CUSPARSE_INDEX_BASE_ZERO);
-
-    // setup input and output csr storage
+    // process input matrix to simulate tc algorithm
     // C = A * A^T
     // 1) get A = graphblas::tril(A)
     // duplicate matrix as A
@@ -326,89 +183,252 @@ int main32(int argc, char* argv[])
     cudaMemcpy(&A_nnz, d_A_nnz, sizeof(int) * 1, cudaMemcpyDeviceToHost);
     printf("nnz before tril_csr(): %d, after tril_csr(): %d\n", nnz, A_nnz); // <- we ignore A's [A_nnz to nnz] from now
 
-    // 2) get B = A^T (get B = A here, and transpose using CUSPARSE_OPERATION_TRANSPOSE)
-    // duplicate A as B
-    int* B_csrRowPtr, *B_csrColInd;
-    float* B_csrVal;
-    int B_nnz = A_nnz;
-    cudaMalloc(&B_csrRowPtr, sizeof(int) * (nrows+1));
-    cudaMalloc(&B_csrColInd, sizeof(int) * B_nnz);
-    cudaMalloc(&B_csrVal, sizeof(float) * B_nnz);
-    cudaMemcpy(B_csrRowPtr, A_csrRowPtr, sizeof(int) * (nrows+1), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(B_csrColInd, A_csrColInd, sizeof(int) * B_nnz, cudaMemcpyDeviceToDevice);
-    cudaMemcpy(B_csrVal, A_csrVal, sizeof(float) * B_nnz, cudaMemcpyDeviceToDevice);
+    // reset host csr with updated matrix
+    free(h_csrVal);
+    free(h_csrColInd);
+    free(h_csrRowPtr);
+    h_csrRowPtr = (int*) malloc(sizeof(int) * (nrows+1));
+    h_csrColInd = (int*) malloc(sizeof(int) * A_nnz);
+    h_csrVal = (float*) malloc(sizeof(float) * A_nnz);
+    cudaMemcpy(h_csrRowPtr, A_csrRowPtr, sizeof(int) * (nrows+1), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_csrColInd, A_csrColInd, sizeof(int) * A_nnz, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_csrVal, A_csrVal, sizeof(float) * A_nnz, cudaMemcpyDeviceToHost);
 
-    // calculate nnz in C and allocate storage
-    int* C_csrRowPtr, *C_csrColInd;
-    float* C_csrVal;
-    int C_nnz;
-    cudaMalloc(&C_csrRowPtr, sizeof(int) * (nrows+1));
-    cusparseXcsrgemmNnz(handle_csr, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_TRANSPOSE, nrows, nrows, nrows,
-                        A_descr, A_nnz, A_csrRowPtr, A_csrColInd,
-                        B_descr, B_nnz, B_csrRowPtr, B_csrColInd,
-                        C_descr, C_csrRowPtr, &C_nnz);
-    cudaMalloc(&C_csrColInd, sizeof(int) * C_nnz);
-    cudaMalloc(&C_csrVal, sizeof(float) * C_nnz);
-    printf("result C nnz: %d\n", C_nnz);
+	// transform from csr to bsr using cuSPARSE
+	int* A_bsrRowPtr, *A_bsrColInd;
+	float* A_bsrVal;
+	int blocksize = 32;
+	int mb = (nrows + blocksize-1)/blocksize;
+    int nb = (ncols + blocksize-1)/blocksize;
+    int nblockrows = mb;
 
-    //
+	// cuSPARSE API metadata setup
+    cusparseMatDescr_t csr_descr = 0;
+    cusparseCreateMatDescr(&csr_descr);
+    cusparseSetMatType(csr_descr,CUSPARSE_MATRIX_TYPE_GENERAL);
+    cusparseSetMatIndexBase(csr_descr,CUSPARSE_INDEX_BASE_ZERO);
+    cusparseMatDescr_t bsr_descr = 0;
+    cusparseCreateMatDescr(&bsr_descr);
+    cusparseSetMatType(bsr_descr, CUSPARSE_MATRIX_TYPE_GENERAL);
+    cusparseSetMatIndexBase(bsr_descr, CUSPARSE_INDEX_BASE_ZERO);
+    cudaStream_t streamId = 0;
+    cusparseHandle_t handle = 0;
+    cusparseCreate(&handle);
+    cusparseSetStream(handle, streamId);
+    cusparseDirection_t dirA = CUSPARSE_DIRECTION_COLUMN;
+
+    // csr2bsr in column-major order, estimate first
+    int nblocks;
+
+    cudaMalloc((void**)&A_bsrRowPtr, sizeof(int) *(nblockrows+1));
+    cusparseXcsr2bsrNnz(handle, dirA, nrows, ncols, csr_descr,
+                        A_csrRowPtr, A_csrColInd, blocksize, bsr_descr, A_bsrRowPtr, &nblocks);
+    cudaMalloc((void**)&A_bsrColInd, sizeof(int)*nblocks);
+    printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
+
+    cusparseDestroyMatDescr(csr_descr);
+    cusparseDestroyMatDescr(bsr_descr);
+    cusparseDestroy(handle);
+
+    // packed matrix tA
+    unsigned* tA;
+    cudaMalloc((void**)&tA, nblocks * blocksize * sizeof(unsigned));
+    csr2bsr_batch_32(h_csrRowPtr, h_csrColInd, nrows, ncols, A_nnz,
+                     A_bsrRowPtr, A_bsrColInd, tA, blocksize, nblockrows, nblocks);
+
+    // csr2csc for B as A^T
+    int* B_cscRowInd, *B_cscColPtr;
+    float* dummy_B_cscVal;
+    cudaMalloc(&B_cscRowInd, sizeof(int) * A_nnz);
+    cudaMalloc(&B_cscColPtr, sizeof(int) * (nrows+1));
+
+    cusparseHandle_t handle_csr2csc;
+    cusparseCreate(&handle_csr2csc);
+    cusparseScsr2csc(handle_csr2csc, nrows, ncols, A_nnz,
+                     A_csrVal, A_csrRowPtr, A_csrColInd,
+                     dummy_B_cscVal, B_cscRowInd, B_cscColPtr,
+                     CUSPARSE_ACTION_SYMBOLIC,
+                     CUSPARSE_INDEX_BASE_ZERO);
+    cusparseDestroy(handle_csr2csc);
+
+    int *h_B_cscRowInd, *h_B_cscColPtr;
+    h_B_cscRowInd = (int*) malloc(sizeof(int) * A_nnz);
+    h_B_cscColPtr = (int*) malloc(sizeof(int) * (nrows+1));
+    cudaMemcpy(h_B_cscRowInd, B_cscRowInd, sizeof(int) * A_nnz, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_B_cscColPtr, B_cscColPtr, sizeof(int) * (nrows+1), cudaMemcpyDeviceToHost);
+    cudaFree(B_cscRowInd);
+    cudaFree(B_cscColPtr);
+
+    // csr2bsr for B & pack matrix for tB
+    int* B_bsrRowPtr, *B_bsrColInd;
+    cudaMalloc(&B_bsrRowPtr, sizeof(int) * (nblockrows+1));
+    cudaMalloc(&B_bsrColInd, sizeof(int) * nblocks);
+    unsigned* tB;
+    cudaMalloc((void**)&tB, nblocks * blocksize * sizeof(unsigned));
+    csr2bsr_batch_32(h_B_cscColPtr, h_B_cscRowInd, nrows, ncols, A_nnz,
+                     B_bsrRowPtr, B_bsrColInd, tB, blocksize, nblockrows, nblocks);
+    free(h_B_cscRowInd);
+    free(h_B_cscColPtr);
+
+//    printDeviceIndArr<<<1,1>>>(A_bsrRowPtr, (nblockrows+1));
+//    printDeviceIndArr<<<1,1>>>(A_bsrColInd, nblocks);
+//    printDeviceIndArr<<<1,1>>>(B_bsrRowPtr, (nblockrows+1));
+//    printDeviceIndArr<<<1,1>>>(B_bsrColInd, nblocks);
+
+	// time measurement setup -----------------------------------
+	cudaEvent_t start, stop;
+	float milliseconds = 0;
+
+    // ============================================= BSTC-32 bsr bmm
+    // allocate bsr storage for resulting C
+    // use 1 float to store the reduced sum for now
+    int* fC;
+	cudaMalloc((void**)&fC, sizeof(int) * nblockrows);
+	setDeviceValArr<<<1,1>>>(fC, nblockrows, 0);
+
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
+    // get grid dim
+    double nbr = cbrt((double)nblockrows);
+    int blockdim = (int)ceil(nbr);
+    printf("cbrt(nblockrows) = %d\n", blockdim);
+    dim3 grid(blockdim, blockdim, blockdim);
+
     // ------
     cudaEventRecord(start);
-    for (int i=0; i<TEST_TIMES; i++) {
-        cusparseScsrgemm(handle_csr, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_TRANSPOSE, nrows, nrows, nrows,
-                         A_descr, A_nnz, A_csrVal, A_csrRowPtr, A_csrColInd,
-                         B_descr, B_nnz, B_csrVal, B_csrRowPtr, B_csrColInd,
-                         C_descr, C_csrVal, C_csrRowPtr, C_csrColInd);
-    }
+    for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
+        bmm32_sparse<int, int><<<grid, 32>>>(tA, tB, fC,
+                                               A_bsrRowPtr, A_bsrColInd,
+                                               B_bsrRowPtr, B_bsrColInd,
+                                               nblockrows, nblocks);
+    }
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
 
     milliseconds = 0;
     cudaEventElapsedTime(&milliseconds,start,stop);
-    double cusparsecsrspgemmfloat_time = (milliseconds*1e3)/double(TEST_TIMES);
+    double bmm32_time = (milliseconds*1e3)/double(TEST_TIMES);
+
     // ------
 
-    // the result include csrvalC, C_csrRowPtr, C_csrColInd
-    //float* result_cusparsecsrspgemmfloat = (float*)malloc(ncols * 1 * sizeof(float));
-    //cudaMemcpy(result_cusparsecsrspgemmfloat, dY, ncols * 1 * sizeof(float), cudaMemcpyDeviceToHost);
+//    printf("fC: \n"); printDeviceIndArr<<<1,1>>>(fC, nblockrows);
+    int* result_bsrbmm32;
+    cudaMalloc((void**)&result_bsrbmm32, sizeof(int) * 1);
+    reuduceSum<<<1,1>>>(fC, nblockrows, result_bsrbmm32);
+    int ntris;
+    cudaMemcpy(&ntris, result_bsrbmm32, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+    printf("ntris: %d\n", ntris);
+    cudaFree(result_bsrbmm32);
 
+
+    // ============================================= cuSPARSE csr spmm-float
+//    // setup cusparse metadata
+//    cusparseHandle_t handle_csr;
+//    cusparseCreate(&handle_csr);
+//
+//    cusparseMatDescr_t A_descr;
+//    cusparseCreateMatDescr(&A_descr);
+//    cusparseSetMatType(A_descr, CUSPARSE_MATRIX_TYPE_GENERAL);
+//    cusparseSetMatIndexBase(A_descr, CUSPARSE_INDEX_BASE_ZERO);
+//
+//    cusparseMatDescr_t B_descr;
+//    cusparseCreateMatDescr(&B_descr);
+//    cusparseSetMatType(B_descr, CUSPARSE_MATRIX_TYPE_GENERAL);
+//    cusparseSetMatIndexBase(B_descr, CUSPARSE_INDEX_BASE_ZERO);
+//
+//    cusparseMatDescr_t C_descr;
+//    cusparseCreateMatDescr(&C_descr);
+//    cusparseSetMatType(C_descr, CUSPARSE_MATRIX_TYPE_GENERAL);
+//    cusparseSetMatIndexBase(C_descr, CUSPARSE_INDEX_BASE_ZERO);
+//
+//    // setup input and output csr storage
+//    // 2) get B = A^T (get B = A here, and transpose using CUSPARSE_OPERATION_TRANSPOSE)
+//    // duplicate A as B
+//    int* B_csrRowPtr, *B_csrColInd;
+//    float* B_csrVal;
+//    int B_nnz = A_nnz;
+//    cudaMalloc(&B_csrRowPtr, sizeof(int) * (nrows+1));
+//    cudaMalloc(&B_csrColInd, sizeof(int) * B_nnz);
+//    cudaMalloc(&B_csrVal, sizeof(float) * B_nnz);
+//    cudaMemcpy(B_csrRowPtr, A_csrRowPtr, sizeof(int) * (nrows+1), cudaMemcpyDeviceToDevice);
+//    cudaMemcpy(B_csrColInd, A_csrColInd, sizeof(int) * B_nnz, cudaMemcpyDeviceToDevice);
+//    cudaMemcpy(B_csrVal, A_csrVal, sizeof(float) * B_nnz, cudaMemcpyDeviceToDevice);
+//
+//    // calculate nnz in C and allocate storage
+//    int* C_csrRowPtr, *C_csrColInd;
+//    float* C_csrVal;
+//    int C_nnz;
+//    cudaMalloc(&C_csrRowPtr, sizeof(int) * (nrows+1));
+//    cusparseXcsrgemmNnz(handle_csr, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_TRANSPOSE, nrows, nrows, nrows,
+//                        A_descr, A_nnz, A_csrRowPtr, A_csrColInd,
+//                        B_descr, B_nnz, B_csrRowPtr, B_csrColInd,
+//                        C_descr, C_csrRowPtr, &C_nnz);
+//    cudaMalloc(&C_csrColInd, sizeof(int) * C_nnz);
+//    cudaMalloc(&C_csrVal, sizeof(float) * C_nnz);
+//    printf("result C nnz: %d\n", C_nnz);
+//
+//    //
+//    cudaEventCreate(&start);
+//    cudaEventCreate(&stop);
+//
+//    // ------
+//    cudaEventRecord(start);
+//    for (int i=0; i<TEST_TIMES; i++) {
+//        cusparseScsrgemm(handle_csr, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_TRANSPOSE, nrows, nrows, nrows,
+//                         A_descr, A_nnz, A_csrVal, A_csrRowPtr, A_csrColInd,
+//                         B_descr, B_nnz, B_csrVal, B_csrRowPtr, B_csrColInd,
+//                         C_descr, C_csrVal, C_csrRowPtr, C_csrColInd);
+//    }
+//
+//    cudaEventRecord(stop);
+//    cudaEventSynchronize(stop);
+//
+//    milliseconds = 0;
+//    cudaEventElapsedTime(&milliseconds,start,stop);
+//    double cusparsecsrspgemmfloat_time = (milliseconds*1e3)/double(TEST_TIMES);
+//    // ------
+//
+//    // the result include csrvalC, C_csrRowPtr, C_csrColInd
+//    //float* result_cusparsecsrspgemmfloat = (float*)malloc(ncols * 1 * sizeof(float));
+//    //cudaMemcpy(result_cusparsecsrspgemmfloat, dY, ncols * 1 * sizeof(float), cudaMemcpyDeviceToHost);
+//
 
     //============================================= CHECK RESULT
-    //printf("CuSPARSE BSR SpMV-float (baseline) success: %d\n", check_result(result_cusparsebsrspmvfloat, result_cusparsebsrspmvfloat, ncols));
-    //printf("BSR BMV-32 success: %d\n", check_result(result_bsrbmv32, result_cusparsebsrspmvfloat, ncols));
+    //printf("CuSPARSE CSR SpGEMM-float (baseline) success: %d\n", check_result(result_cusparsebsrspmvfloat, result_cusparsebsrspmvfloat, ncols));
+    //printf("BSR BMM-32 success: %d\n", check_result(result_bsrbmv32, result_cusparsebsrspmvfloat, ncols));
 
-//    printf("BSR BMM-32: %.3lf\n", bmv32_time);
-//    printf("CuSPARSE BSR SpMV-float: %.3lf\n", cusparsebsrspmvfloat_time);
-    printf("CuSPARSE CSR SpGEMM-float: %.3lf\n", cusparsecsrspgemmfloat_time);
+    printf("BSR BMM-32: %.3lf\n", bmm32_time);
+//    printf("CuSPARSE CSR SpGEMM-float: %.3lf\n", cusparsecsrspgemmfloat_time);
 
-    // free descr and handle memory
-//    cusparseDestroyMatDescr(csr_descr);
-//    cusparseDestroyMatDescr(bsr_descr);
-//    cusparseDestroy(handle);
+    // free bsr bmm
+    cudaFree(fC);
 
-    // free cusparse bsr spmv
-//    cudaFree(x);
-//    cudaFree(y);
+    cudaFree(tB);
+    cudaFree(B_bsrColInd);
+    cudaFree(B_bsrRowPtr);
+
+    cudaFree(tA);
+    cudaFree(A_bsrColInd);
+    cudaFree(A_bsrRowPtr);
+
 
     // free cusparse csr spmv
-    cudaFree(C_csrVal);
-    cudaFree(C_csrColInd);
-    cudaFree(C_csrRowPtr);
-    cudaFree(B_csrVal);
-    cudaFree(B_csrColInd);
-    cudaFree(B_csrRowPtr);
-    cudaFree(d_A_nnz);
-    cudaFree(A_csrVal);
-    cudaFree(A_csrColInd);
-    cudaFree(A_csrRowPtr);
-    cusparseDestroyMatDescr(C_descr);
-    cusparseDestroyMatDescr(B_descr);
-    cusparseDestroyMatDescr(A_descr);
-    cusparseDestroy(handle_csr);
+//    cudaFree(C_csrVal);
+//    cudaFree(C_csrColInd);
+//    cudaFree(C_csrRowPtr);
+//    cudaFree(B_csrVal);
+//    cudaFree(B_csrColInd);
+//    cudaFree(B_csrRowPtr);
+//    cudaFree(d_A_nnz);
+//    cudaFree(A_csrVal);
+//    cudaFree(A_csrColInd);
+//    cudaFree(A_csrRowPtr);
+//    cusparseDestroyMatDescr(C_descr);
+//    cusparseDestroyMatDescr(B_descr);
+//    cusparseDestroyMatDescr(A_descr);
+//    cusparseDestroy(handle_csr);
 
     // free mem
     cudaFree(csrVal);
@@ -420,7 +440,6 @@ int main32(int argc, char* argv[])
     free(h_csrRowPtr);
 
     // free all results
-
 }
 
 int main(int argc, char* argv[])
