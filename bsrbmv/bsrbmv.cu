@@ -115,7 +115,7 @@ __global__ void bmv32_sparse(const unsigned* __restrict__ A, const unsigned* __r
             const Index nblockrows, const Index nblocks)
 {
     const unsigned bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
-    if (bx < nblockrows + 1) {
+    if (bx < nblockrows) {
         GET_LANEID;
 
         // load
@@ -150,7 +150,7 @@ __global__ void bmv64_sparse(const ullong* __restrict__ A, const ullong* __restr
                             const Index nblockrows, const Index nblocks)
 {
     const unsigned bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
-    if (bx < nblockrows + 1) {
+    if (bx < nblockrows) {
         GET_LANEID;
 
         // load
