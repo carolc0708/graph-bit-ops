@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <assert.h>
-#include <sys/time.h>
 
 typedef unsigned long long ullong;
 
@@ -20,64 +19,6 @@ __device__ __inline__ void store128(const void* addr, T a, T b, T c, T d)
 {
     *((float4*)addr) = make_float4(*(float*)(&a),*(float*)(&b),*(float*)(&c),*(float*)(&d));
 }
-
-// to print unsigned
-void bin(unsigned n)
-{
-    unsigned i;
-    for (i = 1 << 31; i > 0; i = i / 2)
-        (n & i) ? printf("1") : printf("0");
-}
-
-// the timer use in GraphBlast
-struct CpuTimer {
-#if defined(CLOCK_PROCESS_CPUTIME_ID)
-
-  double start;
-  double stop;
-
-  void Start() {
-    static struct timeval tv;
-    static struct timezone tz;
-    gettimeofday(&tv, &tz);
-    start = tv.tv_sec + 1.e-6*tv.tv_usec;
-  }
-
-  void Stop() {
-    static struct timeval tv;
-    static struct timezone tz;
-    gettimeofday(&tv, &tz);
-    stop = tv.tv_sec + 1.e-6*tv.tv_usec;
-  }
-
-  double ElapsedMillis() {
-    return 1000*(stop - start);
-  }
-
-#else
-
-  rusage start;
-  rusage stop;
-
-  void Start() {
-    getrusage(RUSAGE_SELF, &start);
-  }
-
-  void Stop() {
-    getrusage(RUSAGE_SELF, &stop);
-  }
-
-  float ElapsedMillis() {
-    float sec = stop.ru_utime.tv_sec - start.ru_utime.tv_sec;
-    float usec = stop.ru_utime.tv_usec - start.ru_utime.tv_usec;
-
-    return (sec * 1000) + (usec /1000);
-  }
-
-#endif
-};
-
-
 
 // weight should be col-major packing, layout is 32 * (32*numofblocks)
 // input should be row-major packing, layout is whatever it is originally

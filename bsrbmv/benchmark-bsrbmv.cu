@@ -9,124 +9,12 @@ using namespace std;
 #include <cusparse_v2.h>
 #include <cublas_v2.h>
 
-//#include "bsrbmv.cu"
 #include "mmio_highlevel.h"
 #include "csr2bsr_batch.cu"
 
-bool check_result(float* p1, float* p2, const int N)
-{
-    bool flag = true;
-    for (int i = 0; i < N; i ++) {
-
-        float diff = p1[i] - p2[i];
-        if (fabs(diff) > 1e-6) {
-//            printf("[%d](%.f,%.f),", i, p1[i], p2[i]);
-            flag = false;
-        }
-    }
-    return flag;
-}
-
-bool check_result(float* p1, int* p2, const int N)
-{
-    bool flag = true;
-    for (int i = 0; i < N * N; i ++) {
-        //printf("(%.0f,%d)",p1[i],p2[i]);
-        float diff = p1[i] - (float)p2[i];
-        if (fabs(diff) > 1e-6) {
-            flag = false;
-        }
-    }
-    return flag;
-}
-
-int countnnzinvec(const float* vec, const int N)
-{
-    int counter = 0;
-    for (int i=0; i<N; i++) if (vec[i] != 0) counter += 1;
-    return counter;
-}
-
-void printvec(const float* vec, const int N)
-{
-    for(int i=0; i<N; i++) printf(vec[i]>0?"1":"0");
-    printf("\n");
-}
-
-__global__ void printresvec(const float* vec, const int N)
-{
-    for(int i=0; i<N; i++) {printf("%d ", (int)vec[i]); if(i%32==31) printf("\n"); }
-    printf("\n");
-}
-
-void printmat(float* bsrval, const int nblocks, const int blocksize)
-{
-    for(int i=0; i<nblocks; i++) {
-        printf("[%d]\n", i);
-        for(int j=0; j<blocksize; j++) {
-            for(int k=0; k<blocksize; k++) {
-                printf(bsrval[i*blocksize*blocksize+j*blocksize+k]>0?"1":"0");
-            }
-            printf("\n");
-        }
-        printf("\n");
-    }
-}
-
-void printbinvec(unsigned* binvec, const int N)
-{
-    for(int i=0; i<N; i++) bin(binvec[i]);
-    printf("\n");
-}
-
-void printbinmat(unsigned* binbsrval, const int nblocks, const int blocksize)
-{
-    for(int i=0; i<nblocks; i++) {
-        printf("[%d]\n", i);
-        for(int j=0; j<blocksize; j++) {
-            bin(binbsrval[i*blocksize+j]);
-            printf("\n");
-        }
-        printf("\n");
-    }
-}
-
-__global__ void printpackvec (ullong* packvec, const int N)
-{
-    for(int i=0; i<N; i++) {
-        ullong j;
-        for(j = 1ULL << 63; j > 0; j = j / 2)
-            (packvec[i] & j) ? printf("1") : printf("0");
-    }
-    printf("\n");
-}
-
-__global__ void printpackmat (ullong* packbsrval,  const int nblocks, const int blocksize)
-{
-    for(int i=0; i<nblocks; i++) {
-        printf("[%d]\n", i);
-        for(int j=0; j<blocksize; j++) {
-            ullong k;
-            for(k = 1ULL << 63; k > 0; k = k / 2)
-                (packbsrval[i*blocksize+j] & k) ? printf("1") : printf("0");
-
-            printf("\n");
-        }
-        printf("\n");
-    }
-}
-
-void printind(int* indarr, const int N)
-{
-    for(int i=0; i<N; i++) {
-        printf("%d ", indarr[i]);
-    }
-    printf("\n");
-}
-
+/* bsrbmv-32 */
 int main32(int argc, char* argv[])
 {
-
     cudaSetDevice(0);
     if (argc < 2)
     {
@@ -134,7 +22,7 @@ int main32(int argc, char* argv[])
         exit(1);
     }
 
-    // matrix storage -----------------------------------
+    // ============================================= matrix storage
     // read sparse matrix from file and store as csr format
     // matrix metadata
     char *filename = argv[1]; // e.g. "G43.mtx"
@@ -162,7 +50,7 @@ int main32(int argc, char* argv[])
     cudaMemcpy(csrColInd, h_csrColInd, sizeof(int) * nnz, cudaMemcpyHostToDevice);
     cudaMemcpy(csrVal, h_csrVal, sizeof(float) * nnz, cudaMemcpyHostToDevice);
     // force all csrval to be 1 (this is for handling weighted adjacency matrix)
-    setDeviceValArr<<<1,1>>>(csrVal, nnz, 1.0);
+    setDeviceValArr<int, float><<<1,1>>>(csrVal, nnz, 1.0);
 
 	// transform from csr to bsr using cuSPARSE
 	int* bsrRowPtr, *bsrColInd;
@@ -200,22 +88,25 @@ int main32(int argc, char* argv[])
     unsigned* tA;
     cudaMalloc((void**)&tA, nblocks * blocksize * sizeof(unsigned));
 
-//    if (nblocks > 100000) { // Large Matrices: batch csr2bsr & pack A at the same time
-        csr2bsr_batch_32(h_csrRowPtr, h_csrColInd, nrows, ncols, nnz,
-                      bsrRowPtr, bsrColInd, tA, blocksize, nblockrows, nblocks);
+#ifdef NONBATCH
+    // for small matrices: csr2bsr directly
+    cudaMalloc((void**)&bsrVal, sizeof(float)*(blocksize*blocksize)*nblocks);
+    cusparseScsr2bsr(handle, dirA, nrows, ncols, csr_descr, csrVal,
+                csrRowPtr, csrColInd, blocksize, bsr_descr, bsrVal, bsrRowPtr, bsrColInd);
 
-//    } else { // Small Matrices: csr2bsr & pack A
-//       cudaMalloc((void**)&bsrVal, sizeof(float)*(blocksize*blocksize)*nblocks);
-//       cusparseScsr2bsr(handle, dirA, nrows, ncols, csr_descr, csrVal,
-//                    csrRowPtr, csrColInd, blocksize, bsr_descr, bsrVal, bsrRowPtr, bsrColInd);
-//
-//      // pack A
-//      ToBit32Col<float><<<dim3(1, nblocks), 32>>>(bsrVal, tA, blocksize, nblocks * blocksize); // sparse matrix
-
-//    }
+    // pack A
+    ToBit32Col<float><<<dim3(1, nblocks), 32>>>(bsrVal, tA, blocksize, nblocks * blocksize); // sparse matrix
 //    printGlobalBSRBlock32<<<1,1>>>(tA, blocksize, nblocks);
 
-    // input vector and result vector storage -----------------------------------
+    // free memory
+    cudaFree(bsrVal);
+#else
+    // use batch transform as default
+    csr2bsr_batch_32(h_csrRowPtr, h_csrColInd, nrows, ncols, nnz,
+                     bsrRowPtr, bsrColInd, tA, blocksize, nblockrows, nblocks);
+#endif
+
+    // ============================================= input vector storage
     // generate random vector
     srand(time(0));
 	float *B = (float*)malloc((nblockrows * blocksize) * 1 * sizeof(float));
@@ -226,7 +117,7 @@ int main32(int argc, char* argv[])
         else B[i] = (x > 0.5) ? 1 : 0;
     }
     printf("initialize a vector with size %d x 1\n", (nblockrows * blocksize));
-//    printf("orivec: \n"); printvec(B, (nblockrows * blocksize));
+//    printf("orivec: \n"); printHostVec(B, (nblockrows * blocksize));
 
     // copy to device
 	float *fB;
@@ -237,88 +128,49 @@ int main32(int argc, char* argv[])
     unsigned *tB;
     cudaMalloc(&tB, nblockrows * 1 * sizeof(unsigned)); // (nblockrows * blocksize) / 32 = nblockrows
 
-    double nbr = cbrt((double)nblockrows);
-    int gridDim = (int)ceil(nbr);
+    // get gridDim, this is to avoid nblockrows being larger than MAX_gridDim (65535?!)
+    int gridDim = (int)ceil(cbrt((double)nblockrows));
     dim3 grid(gridDim, gridDim, gridDim);
+    printf("cbrt(nblockrows) = %d\n", gridDim);
 
     ToBit32Row<float><<<grid, 32>>>(fB, tB, nblockrows * blocksize, 1, nblockrows); // dense vector
 
-	// time measurement setup -----------------------------------
-	cudaEvent_t start, stop;
-	float milliseconds = 0;
 
     // ============================================= BSTC-32 bsr bmv
-    // init C
+    // init C (result storage)
     float *fC;
     cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
-    setDeviceValArr<<<1,1>>>(fC, nblockrows * blocksize, 0);
-
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    // get grid dim
-    printf("cbrt(nblockrows) = %d\n", gridDim);
+    setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
 
     // ------
-    CpuTimer testtime;
-    testtime.Start();
-//    cudaEventRecord(start);
+#ifdef CPUTIMER
+    CpuTimer bmv_timer;
+#else
+    GpuTimer bmv_timer;
+#endif
+    bmv_timer.Start();
+
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
         bmv32_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
     }
-//    cudaEventRecord(stop);
-//    cudaEventSynchronize(stop);
-//    milliseconds = 0;
-//    cudaEventElapsedTime(&milliseconds,start,stop);
-//    double bmv32_time = (milliseconds*1e3)/double(TEST_TIMES);
-    testtime.Stop();
-    double bmv32_time = testtime.ElapsedMillis()/double(TEST_TIMES);
 
-    cudaFree(tA);
-    cudaFree(tB);
+    bmv_timer.Stop();
+    double bmv32_time = bmv_timer.ElapsedMillis()/double(TEST_TIMES);
     // ------
 
+    // free storage
+    cudaFree(tA);
+    cudaFree(tB);
+
+    // copy result to host for verification
     float* result_bsrbmv32 = (float*)malloc(nrows * 1 * sizeof(float)); // don't care padding result
     cudaMemcpy(result_bsrbmv32, fC, nrows * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-//    printf("result_bsrbmv32: \n"); printresvec<<<1,1>>>(fC, nrows);
-    printf("bsrbmv32 nnz in vec: %d\n", countnnzinvec(result_bsrbmv32, nrows));
-
-    // ============================================= cuSPARSE bsr spmv-float 32
-//    // y = α ∗ op ( A ) ∗ x + β ∗ y
-//    // allocate vector x and vector y large enough for bsrmv
-//    float *x, *y;
-//    cudaMalloc((void**)&x, sizeof(float)*(nblockrows * blocksize));
-//    cudaMemcpy(x, B, sizeof(float)*nrows, cudaMemcpyHostToDevice);  // [ncols] to [nb * blocksize] (paddings) is not moved
-//    cudaMalloc((void**)&y, sizeof(float)*(nblockrows * blocksize));
-//    cudaMemset(y, 0, sizeof(float)*nrows);
-//
-//    // perform bsrmv
-    float alpha = 1.0, beta = 1.0; // <-- if TEST_TIME > 1, set beta = 1.0, else 0.0
-//    cusparseOperation_t transA = CUSPARSE_OPERATION_NON_TRANSPOSE;
-//
-//    cudaEventCreate(&start);
-//    cudaEventCreate(&stop);
-//    // ------
-//    cudaEventRecord(start);
-//    for (int i=0; i<TEST_TIMES; i++) {
-//        cusparseSbsrmv(handle, dirA, transA, mb, nb, nblocks, &alpha,
-//                    bsr_descr, bsrVal, bsrRowPtr, bsrColInd, blocksize, x, &beta, y);
-//    }
-//    cudaEventRecord(stop);
-//    cudaEventSynchronize(stop);
-//
-//    milliseconds = 0;
-//    cudaEventElapsedTime(&milliseconds,start,stop);
-//    double cusparsebsrspmvfloat_time = (milliseconds*1e3)/double(TEST_TIMES);
-//    // ------
-//
-//    float* result_cusparsebsrspmvfloat = (float*)malloc(nrows * 1 * sizeof(float));
-//    cudaMemcpy(result_cusparsebsrspmvfloat, y, nrows * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-////    printf("result_cusparsebsrspmvfloat: \n"); printresvec<<<1,1>>>(y, nrows);
-//    printf("nnz in vec: %d\n", countnnzinvec(result_cusparsebsrspmvfloat, nrows));
+//    printf("result_bsrbmv32: \n"); printResVec<float><<<1,1>>>(fC, nrows);
+    printf("bsrbmv32 nnz in vec: %d\n", countNnzinVec<float>(result_bsrbmv32, nrows));
 
     // ============================================= cuSPARSE csr spmv-float
+    // metadata for cuSPARSE API
     cusparseHandle_t handle_csr;
     cusparseMatDescr_t mat_A;
     cusparseStatus_t cusparse_status;
@@ -328,66 +180,64 @@ int main32(int argc, char* argv[])
     cusparseSetMatType(mat_A, CUSPARSE_MATRIX_TYPE_GENERAL);
     cusparseSetMatIndexBase(mat_A, CUSPARSE_INDEX_BASE_ZERO);
 
-    // create dense vector
+    // dummy multiplication variables
+    // y = α ∗ op ( A ) ∗ x + β ∗ y
+#ifdef TEST_TIMES > 1
+    float alpha = 1.0, beta = 1.0;
+#else
+    float alpha = 1.0, beta = 0.0;
+#endif
+
+    // create dense vector storage
     float *dX, *dY;
     cudaMalloc((void**)&dX, sizeof(float)*nrows);
     cudaMemcpy(dX, B, sizeof(float)*nrows, cudaMemcpyHostToDevice);  // [nrows] to [nb * blocksize] (paddings) is not moved
     cudaMalloc((void**)&dY, sizeof(float)*nrows);
-    setDeviceValArr<<<1,1>>>(dY, nrows, 0);
-
-    CpuTimer csrtime;
-    csrtime.Start();
-//    cudaEventCreate(&start);
-//    cudaEventCreate(&stop);
+    setDeviceValArr<int, float><<<1,1>>>(dY, nrows, 0);
 
     // ------
-//    cudaEventRecord(start);
+#ifdef CPUTIMER
+    CpuTimer csr_timer;
+#else
+    GpuTimer csr_timer;
+#endif
+    csr_timer.Start();
+
     for (int i=0; i<TEST_TIMES; i++) {
         cusparseScsrmv(handle_csr, CUSPARSE_OPERATION_NON_TRANSPOSE, nrows, ncols, nnz,
                     &alpha, mat_A, csrVal, csrRowPtr, csrColInd, dX, &beta, dY);
     }
 
-//    cudaEventRecord(stop);
-//    cudaEventSynchronize(stop);
-
-//    milliseconds = 0;
-//    cudaEventElapsedTime(&milliseconds,start,stop);
-//    double cusparsecsrspmvfloat_time = (milliseconds*1e3)/double(TEST_TIMES);
-
-    csrtime.Stop();
-    double cusparsecsrspmvfloat_time = csrtime.ElapsedMillis()/double(TEST_TIMES);
-
+    csr_timer.Stop();
+    double cusparsecsrspmvfloat_time = csr_timer.ElapsedMillis()/double(TEST_TIMES);
 
     // ------
 
+    // copy result to host for verification
     float* result_cusparsecsrspmvfloat = (float*)malloc(nrows * 1 * sizeof(float));
     cudaMemcpy(result_cusparsecsrspmvfloat, dY, nrows * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-//    printf("csrspmvvec: \n"); printresvec<<<1,1>>>(dY, nrows);
-    printf("cuSPARSE nnz in vec: %d\n", countnnzinvec(result_cusparsecsrspmvfloat, nrows));
+//    printf("csrspmvvec: \n"); printResVec<float><<<1,1>>>(dY, nrows);
+    printf("cuSPARSE nnz in vec: %d\n", countNnzinVec<float>(result_cusparsecsrspmvfloat, nrows));
 
+    //============================================= check result
+    // verify bsrbmv with cuSPARSE baseline
+    printf("BSR BMV-32 success: %d\n", checkResult<float>(result_bsrbmv32, result_cusparsecsrspmvfloat, nrows));
 
-    //============================================= CHECK RESULT
-    //printf("CuSPARSE BSR SpMV-float (baseline) success: %d\n", check_result(result_cusparsebsrspmvfloat, result_cusparsebsrspmvfloat, ncols));
-    printf("BSR BMV-32 success: %d\n", check_result(result_bsrbmv32, result_cusparsecsrspmvfloat, nrows));
-
+    // print time
     printf("BSR BMV-32: %.3lf\n", bmv32_time);
-//    printf("CuSPARSE BSR SpMV-float: %.3lf\n", cusparsebsrspmvfloat_time);
     printf("CuSPARSE CSR SpMV-float: %.3lf\n", cusparsecsrspmvfloat_time);
 
-    // free descr and handle memory
+    //============================================= free memory
+    // free cusparse bsr metadata
     cusparseDestroyMatDescr(csr_descr);
     cusparseDestroyMatDescr(bsr_descr);
     cusparseDestroy(handle);
 
-    // free cusparse bsr spmv
-//    cudaFree(x);
-//    cudaFree(y);
-//
-//    // free cusparse csr spmv
-//    cusparseDestroyMatDescr(mat_A);
-//    cusparseDestroy(handle_csr);
-//    cudaFree(dX);
-//    cudaFree(dY);
+    // free cusparse csr spmv
+    cusparseDestroyMatDescr(mat_A);
+    cusparseDestroy(handle_csr);
+    cudaFree(dX);
+    cudaFree(dY);
 
     // free mem
     free(h_csrRowPtr);
@@ -403,9 +253,7 @@ int main32(int argc, char* argv[])
 
     // free all results
     free(result_bsrbmv32);
-//    free(result_cusparsebsrspmvfloat);
     free(result_cusparsecsrspmvfloat);
-
 }
 
 /* bsrbmv-64 */
@@ -419,7 +267,7 @@ int main64(int argc, char* argv[])
         exit(1);
     }
 
-    // matrix storage -----------------------------------
+    // ============================================= matrix storage
     // read sparse matrix from file and store as csr format
     // matrix metadata
     char *filename = argv[1]; // e.g. "G43.mtx"
@@ -447,7 +295,7 @@ int main64(int argc, char* argv[])
     cudaMemcpy(csrColInd, h_csrColInd, sizeof(int) * nnz, cudaMemcpyHostToDevice);
     cudaMemcpy(csrVal, h_csrVal, sizeof(float) * nnz, cudaMemcpyHostToDevice);
     // force all csrval to be 1 (this is for handling weighted adjacency matrix)
-    setDeviceValArr<<<1,1>>>(csrVal, nnz, 1.0);
+    setDeviceValArr<int, float><<<1,1>>>(csrVal, nnz, 1.0);
 
 	// transform from csr to bsr using cuSPARSE
 	int* bsrRowPtr, *bsrColInd;
@@ -481,26 +329,30 @@ int main64(int argc, char* argv[])
     cudaMalloc((void**)&bsrColInd, sizeof(int)*nblocks);
     printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
 
-    // packed matrix with batch csr2bsr
+    // packed matrix tA
     ullong* tA;
     cudaMalloc((void**)&tA, nblocks * blocksize * sizeof(ullong));
 
-//    if (nblocks > 100000) { // Large Matrices: batch csr2bsr & pack A at the same time
-        csr2bsr_batch_64(h_csrRowPtr, h_csrColInd, nrows, ncols, nnz,
-                      bsrRowPtr, bsrColInd, tA, blocksize, nblockrows, nblocks);
 
-//    } else { // Small Matrices: csr2bsr & pack A
-//       cudaMalloc((void**)&bsrVal, sizeof(float)*(blocksize*blocksize)*nblocks);
-//       cusparseScsr2bsr(handle, dirA, nrows, ncols, csr_descr, csrVal,
-//                    csrRowPtr, csrColInd, blocksize, bsr_descr, bsrVal, bsrRowPtr, bsrColInd);
-//
-//      // pack A
-//      ToBit32Col<float><<<dim3(1, nblocks), 32>>>(bsrVal, tA, blocksize, nblocks * blocksize); // sparse matrix
+#ifdef NONBATCH
+    // for small matrices: csr2bsr directly
+    cudaMalloc((void**)&bsrVal, sizeof(float)*(blocksize*blocksize)*nblocks);
+    cusparseScsr2bsr(handle, dirA, nrows, ncols, csr_descr, csrVal,
+                csrRowPtr, csrColInd, blocksize, bsr_descr, bsrVal, bsrRowPtr, bsrColInd);
 
-//    }
-//    printGlobalBSRBlock32<<<1,1>>>(tA, blocksize, nblocks);
+    // pack A
+    ToBit64Col<float><<<dim3(1, nblocks), 32>>>(bsrVal, tA, blocksize, nblocks * blocksize); // sparse matrix
+//    printGlobalBSRBlock64<<<1,1>>>(tA, blocksize, nblocks);
 
-    // input vector and result vector storage -----------------------------------
+    // free memory
+    cudaFree(bsrVal);
+#else
+    // use batch transform as default
+    csr2bsr_batch_64(h_csrRowPtr, h_csrColInd, nrows, ncols, nnz,
+                     bsrRowPtr, bsrColInd, tA, blocksize, nblockrows, nblocks);
+#endif
+
+    // ============================================= input vector storage
     // generate random vector
     srand(time(0));
 	float *B = (float*)malloc((nblockrows * blocksize) * 1 * sizeof(float));
@@ -511,7 +363,7 @@ int main64(int argc, char* argv[])
         else B[i] = (x > 0.5) ? 1 : 0;
     }
     printf("initialize a vector with size %d x 1\n", (nblockrows * blocksize));
-//    printf("orivec: \n"); printvec(B, (nblockrows * blocksize));
+//    printf("orivec: \n"); printHostVec(B, (nblockrows * blocksize));
 
     // copy to device
 	float *fB;
@@ -522,88 +374,50 @@ int main64(int argc, char* argv[])
     ullong *tB;
     cudaMalloc(&tB, nblockrows * 1 * sizeof(ullong)); // (nblockrows * blocksize) / 64 = nblockrows
 
-    // get grid dim
-    double nbr = cbrt((double)nblockrows);
-    int gridDim = (int)ceil(nbr);
+    // get gridDim, this is to avoid nblockrows being larger than MAX_gridDim (65535?!)
+    int gridDim = (int)ceil(cbrt((double)nblockrows));
     dim3 grid(gridDim, gridDim, gridDim);
-    ToBit64Row<float><<<grid, 32>>>(fB, tB, nblockrows * blocksize, 1, nblockrows); // dense vector
-
-	// time measurement setup -----------------------------------
-	cudaEvent_t start, stop;
-	float milliseconds = 0;
-
-    // ============================================= BSTC-64 bsr bmv
-    // init C
-    float *fC;
-    cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
-    setDeviceValArr<<<1,1>>>(fC, nblockrows * blocksize, 0);
-
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    // get grid dim
     printf("cbrt(nblockrows) = %d\n", gridDim);
 
+    ToBit64Row<float><<<grid, 32>>>(fB, tB, nblockrows * blocksize, 1, nblockrows); // dense vector
+
+
+    // ============================================= BSTC-64 bsr bmv
+    // init C (output storage)
+    float *fC;
+    cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
+    setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
+
     // ------
-    CpuTimer testtime;
-    testtime.Start();
-//    cudaEventRecord(start);
+#ifdef CPUTIMER
+    CpuTimer bmv_timer;
+#else
+    GpuTimer bmv_timer;
+#endif
+    bmv_timer.Start();
+
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
         bmv64_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
     }
-//    cudaEventRecord(stop);
-//    cudaEventSynchronize(stop);
-//    milliseconds = 0;
-//    cudaEventElapsedTime(&milliseconds,start,stop);
-//    double bmv32_time = (milliseconds*1e3)/double(TEST_TIMES);
-    testtime.Stop();
-    double bmv64_time = testtime.ElapsedMillis()/double(TEST_TIMES);
 
-    cudaFree(tA);
-    cudaFree(tB);
+    bmv_timer.Stop();
+    double bmv64_time = bmv_timer.ElapsedMillis()/double(TEST_TIMES);
+
     // ------
 
+    // free memory
+    cudaFree(tA);
+    cudaFree(tB);
+
+    // copy result to host for verification
     float* result_bsrbmv64 = (float*)malloc(nrows * 1 * sizeof(float)); // don't care padding result
     cudaMemcpy(result_bsrbmv64, fC, nrows * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-//    printf("result_bsrbmv32: \n"); printresvec<<<1,1>>>(fC, nrows);
-    printf("bsrbmv64 nnz in vec: %d\n", countnnzinvec(result_bsrbmv64, nrows));
-
-    // ============================================= cuSPARSE bsr spmv-float 32
-//    // y = α ∗ op ( A ) ∗ x + β ∗ y
-//    // allocate vector x and vector y large enough for bsrmv
-//    float *x, *y;
-//    cudaMalloc((void**)&x, sizeof(float)*(nblockrows * blocksize));
-//    cudaMemcpy(x, B, sizeof(float)*nrows, cudaMemcpyHostToDevice);  // [ncols] to [nb * blocksize] (paddings) is not moved
-//    cudaMalloc((void**)&y, sizeof(float)*(nblockrows * blocksize));
-//    cudaMemset(y, 0, sizeof(float)*nrows);
-//
-//    // perform bsrmv
-    float alpha = 1.0, beta = 1.0; // <-- if TEST_TIME > 1, set beta = 1.0, else 0.0
-//    cusparseOperation_t transA = CUSPARSE_OPERATION_NON_TRANSPOSE;
-//
-//    cudaEventCreate(&start);
-//    cudaEventCreate(&stop);
-//    // ------
-//    cudaEventRecord(start);
-//    for (int i=0; i<TEST_TIMES; i++) {
-//        cusparseSbsrmv(handle, dirA, transA, mb, nb, nblocks, &alpha,
-//                    bsr_descr, bsrVal, bsrRowPtr, bsrColInd, blocksize, x, &beta, y);
-//    }
-//    cudaEventRecord(stop);
-//    cudaEventSynchronize(stop);
-//
-//    milliseconds = 0;
-//    cudaEventElapsedTime(&milliseconds,start,stop);
-//    double cusparsebsrspmvfloat_time = (milliseconds*1e3)/double(TEST_TIMES);
-//    // ------
-//
-//    float* result_cusparsebsrspmvfloat = (float*)malloc(nrows * 1 * sizeof(float));
-//    cudaMemcpy(result_cusparsebsrspmvfloat, y, nrows * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-////    printf("result_cusparsebsrspmvfloat: \n"); printresvec<<<1,1>>>(y, nrows);
-//    printf("nnz in vec: %d\n", countnnzinvec(result_cusparsebsrspmvfloat, nrows));
+//    printf("result_bsrbmv32: \n"); printResVec<float><<<1,1>>>(fC, nrows);
+    printf("bsrbmv64 nnz in vec: %d\n", countNnzinVec<float>(result_bsrbmv64, nrows));
 
     // ============================================= cuSPARSE csr spmv-float
+    // metadata for cuSPARSE API
     cusparseHandle_t handle_csr;
     cusparseMatDescr_t mat_A;
     cusparseStatus_t cusparse_status;
@@ -613,66 +427,64 @@ int main64(int argc, char* argv[])
     cusparseSetMatType(mat_A, CUSPARSE_MATRIX_TYPE_GENERAL);
     cusparseSetMatIndexBase(mat_A, CUSPARSE_INDEX_BASE_ZERO);
 
+    // dummy multiplication variables
+    // y = α ∗ op ( A ) ∗ x + β ∗ y
+#ifdef TEST_TIMES > 1
+    float alpha = 1.0, beta = 1.0;
+#else
+    float alpha = 1.0, beta = 0.0;
+#endif
+
     // create dense vector
     float *dX, *dY;
     cudaMalloc((void**)&dX, sizeof(float)*nrows);
     cudaMemcpy(dX, B, sizeof(float)*nrows, cudaMemcpyHostToDevice);  // [nrows] to [nb * blocksize] (paddings) is not moved
     cudaMalloc((void**)&dY, sizeof(float)*nrows);
-    setDeviceValArr<<<1,1>>>(dY, nrows, 0);
-
-    CpuTimer csrtime;
-    csrtime.Start();
-//    cudaEventCreate(&start);
-//    cudaEventCreate(&stop);
+    setDeviceValArr<int, float><<<1,1>>>(dY, nrows, 0);
 
     // ------
-//    cudaEventRecord(start);
+#ifdef CPUTIMER
+    CpuTimer csr_timer;
+#else
+    GpuTimer csr_timer;
+#endif
+    csr_timer.Start();
+
     for (int i=0; i<TEST_TIMES; i++) {
         cusparseScsrmv(handle_csr, CUSPARSE_OPERATION_NON_TRANSPOSE, nrows, ncols, nnz,
                     &alpha, mat_A, csrVal, csrRowPtr, csrColInd, dX, &beta, dY);
     }
 
-//    cudaEventRecord(stop);
-//    cudaEventSynchronize(stop);
-
-//    milliseconds = 0;
-//    cudaEventElapsedTime(&milliseconds,start,stop);
-//    double cusparsecsrspmvfloat_time = (milliseconds*1e3)/double(TEST_TIMES);
-
-    csrtime.Stop();
-    double cusparsecsrspmvfloat_time = csrtime.ElapsedMillis()/double(TEST_TIMES);
-
+    csr_timer.Stop();
+    double cusparsecsrspmvfloat_time = csr_timer.ElapsedMillis()/double(TEST_TIMES);
 
     // ------
 
+    // copy result to host for verification
     float* result_cusparsecsrspmvfloat = (float*)malloc(nrows * 1 * sizeof(float));
     cudaMemcpy(result_cusparsecsrspmvfloat, dY, nrows * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-//    printf("csrspmvvec: \n"); printresvec<<<1,1>>>(dY, nrows);
-    printf("cuSPARSE nnz in vec: %d\n", countnnzinvec(result_cusparsecsrspmvfloat, nrows));
+//    printf("csrspmvvec: \n"); printResVec<float><<<1,1>>>(dY, nrows);
+    printf("cuSPARSE nnz in vec: %d\n", countNnzinVec<float>(result_cusparsecsrspmvfloat, nrows));
 
 
-    //============================================= CHECK RESULT
-    //printf("CuSPARSE BSR SpMV-float (baseline) success: %d\n", check_result(result_cusparsebsrspmvfloat, result_cusparsebsrspmvfloat, ncols));
-    printf("BSR BMV-64 success: %d\n", check_result(result_bsrbmv64, result_cusparsecsrspmvfloat, nrows));
+    //============================================= check result
+    printf("BSR BMV-64 success: %d\n", checkResult<float>(result_bsrbmv64, result_cusparsecsrspmvfloat, nrows));
 
     printf("BSR BMV-64: %.3lf\n", bmv64_time);
-//    printf("CuSPARSE BSR SpMV-float: %.3lf\n", cusparsebsrspmvfloat_time);
     printf("CuSPARSE CSR SpMV-float: %.3lf\n", cusparsecsrspmvfloat_time);
 
+
+    //============================================= free memory
     // free descr and handle memory
     cusparseDestroyMatDescr(csr_descr);
     cusparseDestroyMatDescr(bsr_descr);
     cusparseDestroy(handle);
 
-    // free cusparse bsr spmv
-//    cudaFree(x);
-//    cudaFree(y);
-//
-//    // free cusparse csr spmv
-//    cusparseDestroyMatDescr(mat_A);
-//    cusparseDestroy(handle_csr);
-//    cudaFree(dX);
-//    cudaFree(dY);
+    // free cusparse csr spmv
+    cusparseDestroyMatDescr(mat_A);
+    cusparseDestroy(handle_csr);
+    cudaFree(dX);
+    cudaFree(dY);
 
     // free mem
     free(h_csrRowPtr);
@@ -688,13 +500,15 @@ int main64(int argc, char* argv[])
 
     // free all results
     free(result_bsrbmv64);
-//    free(result_cusparsebsrspmvfloat);
     free(result_cusparsecsrspmvfloat);
 
 }
 
 int main(int argc, char* argv[])
 {
-    //main32(argc, argv);
+#ifdef BLOCKSIZE == 64
     main64(argc, argv);
+#else
+    main32(argc, argv);
+#endif
 }

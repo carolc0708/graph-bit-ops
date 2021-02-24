@@ -3,8 +3,40 @@ CC = nvcc
 FLAGS = -arch=sm_60 -O3 -std=c++11 -w # -Xptxas --maxrregcount=96
 LINK = -lcublas -lcusparse -lcudart
 
-bsrbmv: benchmark-bsrbmv.cu bsrbmv.cu
+all: bsrbmv32 bsrbmv64 bsrbmv32cputimer bsrbmv64cputimer
+
+# default
+bsrbmv: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -o $@
 
+# default: use gpu timer
+bsrbmv32: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=32 -o $@
+
+bsrbmv64: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -o $@
+
+# use cputimer
+bsrbmv32cputimer: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=32 -DCPUTIMER -o $@
+
+bsrbmv64cputimer: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -DCPUTIMER -o $@
+
+# nonbatch csr2bsr for small matrices read
+bsrbmv32nonbatch: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=32 -DNONBATCH -o $@
+
+bsrbmv64nonbatch: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -DNONBATCH -o $@
+
+# debug csr2bsr_batch.cu
+bsrbmv32debug: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=32 -DDEBUG -o $@
+
+bsrbmv64debug: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -DDEBUG -o $@
+
 clean:
-	rm -f bsrbmv *.o
+	rm -f bsrbmv bsrbmv32 bsrbmv64 bsrbmv32cputimer bsrbmv64cputimer \
+	    bsrbmv32nonbatch bsrbmv64nonbatch bsrbmv32debug bsrbmv64debug *.o
