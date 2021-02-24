@@ -1,7 +1,7 @@
 #include <iostream>
 #include <sys/time.h>
 
-#define TEST_TIMES 5 // do not test more than 1 time for now (vector not clean)
+#define TEST_TIMES 5
 using namespace std;
 
 #include <cuda.h>
