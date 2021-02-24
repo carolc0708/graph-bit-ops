@@ -155,7 +155,7 @@ void csr2bsr_batch_32(const int* h_csrRowPtr, const int* h_csrColInd,
             CHECK_CUSPARSE( cusparseSetStream(handle, streamId) );
 
             // 3) cusparse direction
-            cusparseDirection_t dirA = CUSPARSE_DIRECTION_ROW;//CUSPARSE_DIRECTION_COLUMN;
+            cusparseDirection_t dirA = CUSPARSE_DIRECTION_ROW;
 
             /* **************************************** */
             // set buffer csr storage
@@ -302,7 +302,7 @@ void csr2bsr_batch_64(const int* h_csrRowPtr, const int* h_csrColInd,
             CHECK_CUSPARSE( cusparseSetStream(handle, streamId) );
 
             // 3) cusparse direction
-            cusparseDirection_t dirA = CUSPARSE_DIRECTION_ROW;//CUSPARSE_DIRECTION_COLUMN;
+            cusparseDirection_t dirA = CUSPARSE_DIRECTION_ROW;
 
             /* **************************************** */
             // set buffer csr storage

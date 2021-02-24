@@ -102,18 +102,20 @@ __global__ void ToBit32Col(const T* __restrict__ A, unsigned* B, const int A_hei
 
 // row-major packing bit 32
 template <typename T>
-__global__ void ToBit32Row(const T* __restrict__ A, unsigned* B, const int A_height, const int A_width)
+__global__ void ToBit32Row(const T* __restrict__ A, unsigned* B, const int A_height, const int A_width, const int nblockrows)
 {
-    const unsigned bx = blockIdx.x; // nblockrows
-    const unsigned by = blockIdx.y; // 1
-    unsigned Bval=0;
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+
+    if (bx < nblockrows) {
+        unsigned Bval=0;
 #pragma unroll
-    for (int i=0; i<32; i++)
-    {
-        T f0 = A[bx*32+i];
-        Bval = (Bval<<1) + (f0>0);
+        for (int i=0; i<32; i++)
+        {
+            T f0 = A[bx*32+i];
+            Bval = (Bval<<1) + (f0>0);
+        }
+        B[bx] = Bval;
     }
-    B[bx] = Bval;
 }
 
 // col-major packing bit 64
@@ -140,19 +142,22 @@ __global__ void ToBit64Col(const T* __restrict__ A, ullong* B, const int A_heigh
 
 // row-major packing bit 64
 template <typename T>
-__global__ void ToBit64Row(const T* __restrict__  A, ullong* B, const int A_height, const int A_width)
+__global__ void ToBit64Row(const T* __restrict__  A, ullong* B, const int A_height, const int A_width, const int nblockrows)
 {
-    GET_LANEID;
-    const unsigned bx = blockIdx.x;
-    const unsigned by = blockIdx.y;
-    ullong Bval = 0;
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+
+    if (bx < nblockrows) {
+        GET_LANEID;
+
+        ullong Bval = 0;
 #pragma unroll
-    for (int i=0; i<64; i++)
-    {
-        T f0 = A[bx*64+i];
-        Bval = (Bval<<1) | (f0>0);
+        for (int i=0; i<64; i++)
+        {
+            T f0 = A[bx*64+i];
+            Bval = (Bval<<1) | (f0>0);
+        }
+        B[bx] = Bval;
     }
-    B[bx] = Bval;
 }
 
 // bsr bmv32 no padding
