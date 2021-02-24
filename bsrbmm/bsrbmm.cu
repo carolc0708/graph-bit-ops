@@ -115,7 +115,7 @@ __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __r
             const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
             const Index nblockrows, const Index nblocks)
 {
-    const int bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
         GET_LANEID;
         T* Csub = &C[0];
@@ -160,6 +160,7 @@ __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __r
     } // if bx < nblockrows + 1
 }
 
+// <-- not implemented
 // bsr bmv64 no padding
 // A (bsr matrix) * B (vector) = C (vector)
 template <typename Index, typename T>
@@ -168,7 +169,7 @@ __global__ void bmm64_sparse(const ullong* __restrict__ A, const ullong* __restr
                             const Index* __restrict__ rowptr, const Index* __restrict__ colind,
                             const Index nblockrows, const Index nblocks)
 {
-    const unsigned bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
         GET_LANEID;
 

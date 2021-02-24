@@ -29,6 +29,56 @@ void bin(unsigned n)
         (n & i) ? printf("1") : printf("0");
 }
 
+// the timer use in GraphBlast
+struct CpuTimer {
+#if defined(CLOCK_PROCESS_CPUTIME_ID)
+
+  double start;
+  double stop;
+
+  void Start() {
+    static struct timeval tv;
+    static struct timezone tz;
+    gettimeofday(&tv, &tz);
+    start = tv.tv_sec + 1.e-6*tv.tv_usec;
+  }
+
+  void Stop() {
+    static struct timeval tv;
+    static struct timezone tz;
+    gettimeofday(&tv, &tz);
+    stop = tv.tv_sec + 1.e-6*tv.tv_usec;
+  }
+
+  double ElapsedMillis() {
+    return 1000*(stop - start);
+  }
+
+#else
+
+  rusage start;
+  rusage stop;
+
+  void Start() {
+    getrusage(RUSAGE_SELF, &start);
+  }
+
+  void Stop() {
+    getrusage(RUSAGE_SELF, &stop);
+  }
+
+  float ElapsedMillis() {
+    float sec = stop.ru_utime.tv_sec - start.ru_utime.tv_sec;
+    float usec = stop.ru_utime.tv_usec - start.ru_utime.tv_usec;
+
+    return (sec * 1000) + (usec /1000);
+  }
+
+#endif
+};
+
+
+
 // weight should be col-major packing, layout is 32 * (32*numofblocks)
 // input should be row-major packing, layout is whatever it is originally
 
@@ -54,7 +104,7 @@ __global__ void ToBit32Col(const T* __restrict__ A, unsigned* B, const int A_hei
 template <typename T>
 __global__ void ToBit32Row(const T* __restrict__ A, unsigned* B, const int A_height, const int A_width)
 {
-    const unsigned bx = blockIdx.x; // blockrows
+    const unsigned bx = blockIdx.x; // nblockrows
     const unsigned by = blockIdx.y; // 1
     unsigned Bval=0;
 #pragma unroll
@@ -114,13 +164,13 @@ __global__ void bmv32_sparse(const unsigned* __restrict__ A, const unsigned* __r
             const Index* __restrict__ rowptr, const Index* __restrict__ colind,
             const Index nblockrows, const Index nblocks)
 {
-    const unsigned bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
         GET_LANEID;
 
         // load
-        int row_start = rowptr[bx]; // 0 32 64 . . . 991
-        int row_end = rowptr[bx+1]; // 32 64 96 . . . 991 1022
+        int row_start = rowptr[bx]; // 0 32 64 . . . 991 [0...nblockrows-1]
+        int row_end = rowptr[bx+1]; // 32 64 96 . . . 991 1022 [1...nblockrows]
 
         const unsigned* Asub = &(A[row_start*32]); // block is in continuous layout
         const unsigned* Bsub = &(B[0]); // 0, when it is mv
@@ -149,7 +199,7 @@ __global__ void bmv64_sparse(const ullong* __restrict__ A, const ullong* __restr
                             const Index* __restrict__ rowptr, const Index* __restrict__ colind,
                             const Index nblockrows, const Index nblocks)
 {
-    const unsigned bx = blockIdx.x * blockDim.x + blockIdx.y * blockDim.y + blockIdx.z;
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
         GET_LANEID;
 
