@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <assert.h>
-#include <sys/time.h>
 
 typedef unsigned long long ullong;
 
@@ -21,16 +20,7 @@ __device__ __inline__ void store128(const void* addr, T a, T b, T c, T d)
     *((float4*)addr) = make_float4(*(float*)(&a),*(float*)(&b),*(float*)(&c),*(float*)(&d));
 }
 
-// to print unsigned
-void bin(unsigned n)
-{
-    unsigned i;
-    for (i = 1 << 31; i > 0; i = i / 2)
-        (n & i) ? printf("1") : printf("0");
-}
-
 // C = A * A^T => col-major(A) * col-major(A) using rowbyrow model
-
 // col-major packing bit 32
 template <typename T>
 __global__ void ToBit32Col(const T* __restrict__ A, unsigned* B, const int A_height, const int A_width) // blocksize, nblocks * blocksize
@@ -107,7 +97,6 @@ __global__ void ToBit64Row(const T* __restrict__  A, ullong* B, const int A_heig
 // bsr bmm32 no padding
 // Cik = Sum(A_ij * B_jk)
 // A (bsr matrix) * B (bsr matrix) = C (one float number)
-// originally consider to implement C in coo format, but that is not straightforward
 // col-bin(32 x (blocksize x nblocks)) x col-bin(32 x (blocksize x nblocks))
 template <typename Index, typename T>
 __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
@@ -117,8 +106,12 @@ __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __r
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
+
         GET_LANEID;
         T* Csub = &C[0];
+
+        register int Cm[32] = {0};
+        int sum = 0;
 
         // load
         int A_row_start = A_rowptr[bx]; // 0 32 64 . . . 991
@@ -133,30 +126,27 @@ __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __r
             const unsigned* Bsub = &(B[B_row_start*32]);
             for (int j=B_row_start; j<B_row_end; j++) {
                 unsigned r1 = Bsub[(j-B_row_start)*32+laneid]; // <--
-                int B_col = B_colind[j];
-                register int Cm[32] = {0};
+//                int B_col = B_colind[j];
+
 
                 /* bmm */
                 #pragma unroll
                 for (int k=0; k<32; k++)
                 {
                     unsigned r2 = __shfl(r1, k); //from lane-j, r1 of matrix B
-
-                    // should be protected by critical section !!!
-                    Cm[k] += __popc(r0 & r2);
+                    Cm[k] += __popc(r0 & r2); // each lane dot-product with the column of B
                 }
                 /* bmm */
 
-                // store
-                //C[bx*32+laneid][B_col*32+k] += Cm[k];
-                __syncthreads();
-                int sum = 0;
-                for (int i=0; i<32; i++) sum += Cm[i];
-                atomicAdd(Csub+bx, sum);
-                __syncthreads();
-
             } // j in [B_row_start ... B_row_end]
         } // i in [A_row_start ... A_row_end]
+
+        // store
+//        __syncthreads();
+        for (int l=0; l<32; l++) sum += Cm[l];
+        atomicAdd(Csub+bx, sum);
+//        __syncthreads();
+
     } // if bx < nblockrows + 1
 }
 
@@ -235,10 +225,32 @@ __global__ void tril_csr(const Index* A_rowptr, const Index* A_colind, const T* 
 }
 
 /* Extended method, non optimized */
-__global__ void reuduceSum(const int *gArr, int arraySize, int *gOut) {
-    gOut[0] = 0;
+template <typename T>
+__global__ void reuduceSum(const T *gArr, int arraySize, T *gOut) {
+    gOut[0] = (T)0;
     for (int i=0; i<arraySize; i++) {
         gOut[0] += gArr[i];
+    }
+}
+
+/* Extended method to set diagonal elem to 0 */
+__global__ void removeDiagonalNnz(const int* rowptr, const int* colind, float* csrval, const int nrows) {
+    for(int i=0; i<nrows; i++) {
+        for(int j=rowptr[i]; j<rowptr[i+1]; j++) {
+            if (colind[j] == i) csrval[j] = 0.0;
+        }
+    }
+}
+
+/* sparsity mask */
+// something like this
+// printout to debug
+__global__ void maskReduceSum(const int* mask_rowptr, const int* mask_colind, const int* rowptr, const int* colind, const float* csrval, const int nrows, float *gOut) {
+    gOut[0] = (float)0;
+    for(int i=0; i<nrows; i++) {
+        for(int j=mask_rowptr[i]; j<mask_rowptr[i+1]; j++) {
+            if (mask_colind[j] == colind[j]) gOut[0] += csrval[j];
+        }
     }
 }
 
