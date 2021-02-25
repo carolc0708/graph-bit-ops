@@ -102,7 +102,7 @@ template <typename Index, typename T>
 __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
             const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
             const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
-            const Index nblockrows, const Index nblocks)
+            const Index nblockrows, const Index nblocks, const int nrows)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
@@ -134,7 +134,8 @@ __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __r
                 for (int k=0; k<32; k++)
                 {
                     unsigned r2 = __shfl(r1, k); //from lane-j, r1 of matrix B
-                    Cm[k] += __popc(r0 & r2); // each lane dot-product with the column of B
+//                    if (bx*32+laneid < nrows && B_col*32+k < nrows)
+                        Cm[k] += __popc(r0 & r2); // each lane dot-product with the column of B
                 }
                 /* bmm */
 
@@ -154,39 +155,61 @@ __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __r
 // bsr bmv64 no padding
 // A (bsr matrix) * B (vector) = C (vector)
 template <typename Index, typename T>
-__global__ void bmm64_sparse(const ullong* __restrict__ A, const ullong* __restrict__ B,
-                            T* C, const int A_height, const int A_width, const int B_width,
-                            const Index* __restrict__ rowptr, const Index* __restrict__ colind,
-                            const Index nblockrows, const Index nblocks)
+__global__ void bmm64_sparse(const ullong* __restrict__ A, const ullong* __restrict__ B, T* C,
+                            const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                            const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                            const Index nblockrows, const Index nblocks, const int nrows)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
+
         GET_LANEID;
+        T* Csub = &C[0];
+
+        register int Cm[64] = {0};
+        int sum = 0;
 
         // load
-        unsigned row_start = rowptr[bx];
-        unsigned row_end = rowptr[bx+1];
-        const ullong* Asub = &(A[row_start*64]);
-        const ullong* Bsub = &(B[0]);
-        T* Csub = &(C[bx*64]);
-        register unsigned Cm[1] = {0};
+        int A_row_start = A_rowptr[bx]; // 0 32 64 . . . 991
+        int A_row_end = A_rowptr[bx+1]; // 32 64 96 . . . 991 1022
+        const ullong* Asub = &(A[A_row_start*64]); // block is in continuous layout
+        for (int i=A_row_start; i<A_row_end; i++) {
+            ullong a0 = Asub[(i-A_row_start)*64+laneid];
+            ullong a1 = Asub[(i-A_row_start)*64+32+laneid];
 
-        // compute
-        for (int i=row_start; i<row_end; i++) {
-            Cm[0] = 0;
-            ullong a0 = Asub[(i-row_start)*64+laneid];
-            ullong a1 = Asub[(i-row_start)*64+32+laneid];
-            ullong b0 = Bsub[colind[i]];
+            int A_col = A_colind[i];
+            int B_row_start = B_rowptr[A_col];
+            int B_row_end = B_rowptr[A_col+1];
+            const ullong* Bsub = &(B[B_row_start*64]);
+            for (int j=B_row_start; j<B_row_end; j++) {
+                ullong b0 = Bsub[(j-B_row_start)*64+laneid];
+                ullong b1 = Bsub[(j-B_row_start)*64+32+laneid];
+//                int B_col = B_colind[j];
 
-            Cm[0] += (__popcll(a0 & b0) << 16) + __popcll(a1 & b0);
+                /* bmm */
+                #pragma unroll
+                for (int k=0; k<32; k++)
+                {
+                    ullong l0 = __shfl(b0,k);
+                    ullong l1 = __shfl(b1,k);
+//                    if (bx*64+laneid < nrows && B_col*64+k < nrows)
+                        Cm[k] += __popcll(a0&l0) + __popcll(a1&l0);
+//                    if (bx*64+laneid < nrows && B_col*64+32+k < nrows)
+                        Cm[32+k] += __popcll(a0&l1) + __popcll(a1&l1);
 
-            // store
-            short t0, t1;
-            asm volatile("mov.b32 {%0,%1}, %2;":"=h"(t1),"=h"(t0):"r"(Cm[0]));
-            Csub[laneid] += (T)t0;
-            Csub[laneid+32] += (T)t1;
-        }
-    }
+                }
+                /* bmm */
+
+            } // j in [B_row_start ... B_row_end]
+        } // i in [A_row_start ... A_row_end]
+
+        // store
+//        __syncthreads();
+        for (int l=0; l<64; l++) sum += Cm[l];
+        atomicAdd(Csub+bx, sum);
+//        __syncthreads();
+
+    } // if bx < nblockrows + 1
 }
 
 /**
