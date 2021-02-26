@@ -217,8 +217,8 @@ int main32(int argc, char* argv[])
     cudaMemcpy(&ntris_bmm, result_bsrbmm32, sizeof(int) * 1, cudaMemcpyDeviceToHost);
 
     printf("==========================================\n");
-    float size = (nblocks * blocksize * 4 + (nblockrows+1+nblocks) * 4) * 2/1024.0;
-    printf("nblocks: %d, bsr total size: %.f (KB)\n", nblocks, size);
+    unsigned size = (nblocks * blocksize * 4 + (nblockrows+1+nblocks) * 4) * 2/1024;
+    printf("nblocks: %d, bsr total size: %d (KB)\n", nblocks, (int)size);
     printf("ntris_bmm: %d\n", ntris_bmm);
     printf("BSR BMM-32: %.3lf\n", bmm32_time);
 
@@ -565,8 +565,8 @@ int main64(int argc, char* argv[])
 
 
     printf("==========================================\n");
-    float size = (nblocks * blocksize * 8 + (nblockrows+1+nblocks) * 4) * 2/1024.0;
-    printf("nblocks: %d, bsr total size: %.f (KB)\n", nblocks, size);
+    unsigned size = (nblocks * blocksize * 8 + (nblockrows+1+nblocks) * 4) * 2/1024;
+    printf("nblocks: %d, bsr total size: %d (KB)\n", nblocks, (int)size);
     printf("ntris_bmm: %d\n", ntris_bmm);
     printf("BSR BMM-64: %.3lf\n", bmm64_time);
 
