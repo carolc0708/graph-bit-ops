@@ -506,7 +506,7 @@ int main64(int argc, char* argv[])
 
 int main(int argc, char* argv[])
 {
-#ifdef BLOCKSIZE == 64
+#if BLOCKSIZE == 64
     main64(argc, argv);
 #else
     main32(argc, argv);
