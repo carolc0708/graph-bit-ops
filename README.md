@@ -6,12 +6,12 @@
 
 ## BSR BMV (verified)
 * in directory `/bsrbmv`
-* `make` to get `bsrbmv32`, `bsrbmv64`, `bsrbmv32cputimer`, `bsrbmv64cputimer`
+* `make` to get `bsrbmv32`, `bsrbmv64`
 * `./bsrbmv32 {/path/to/matrix/file.mtx}`
 
 ## BSR BMM
 * in directory `/bsrbmm`
-* `make` to get `bsrbmm32`, `bsrbmm64`, `bsrbmm32cputimer`, `bsrbmm64cputimer`
+* `make` to get `bsrbmm32`, `bsrbmm64`
 * `./bsrbmm32 {/path/to/matrix/file.mtx}`
 
 ## BMM (result not verified)

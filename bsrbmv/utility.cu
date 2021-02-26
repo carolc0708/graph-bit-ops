@@ -85,28 +85,61 @@ struct CpuTimer {
 /**
 * GPU Timer for better measurement granularity
 */
+//struct GpuTimer {
+//
+//    cudaEvent_t start, stop;
+//    float milliseconds = 0;
+//
+//    void Start() {
+//        cudaEventCreate(&start);
+//        cudaEventCreate(&stop);
+//        cudaEventRecord(start);
+//    }
+//
+//    void Stop() {
+//        cudaEventRecord(stop);
+//        cudaEventSynchronize(stop);
+//    }
+//
+//    float ElapsedMillis() {
+//        milliseconds = 0;
+//        cudaEventElapsedTime(&milliseconds,start,stop);
+//
+//        return milliseconds;
+//    }
+//};
+
+/**
+* The GPU Timer used in GraphBlast
+*/
 struct GpuTimer {
+  cudaEvent_t start;
+  cudaEvent_t stop;
 
-    cudaEvent_t start, stop;
-    float milliseconds = 0;
+  GpuTimer() {
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+  }
 
-    void Start() {
-        cudaEventCreate(&start);
-        cudaEventCreate(&stop);
-        cudaEventRecord(start);
-    }
+  ~GpuTimer() {
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+  }
 
-    void Stop() {
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-    }
+  void Start() {
+    cudaEventRecord(start, 0);
+  }
 
-    float ElapsedMillis() {
-        milliseconds = 0;
-        cudaEventElapsedTime(&milliseconds,start,stop);
+  void Stop() {
+    cudaEventRecord(stop, 0);
+  }
 
-        return milliseconds;
-    }
+  float ElapsedMillis() {
+    float elapsed;
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&elapsed, start, stop);
+    return elapsed;
+  }
 };
 
 //======================================================================================

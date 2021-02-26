@@ -189,11 +189,8 @@ int main32(int argc, char* argv[])
     printf("cbrt(nblockrows) = %d\n", gridDim);
 
     // ------
-#ifdef CPUTIMER
-    CpuTimer bmm_timer;
-#else
+
     GpuTimer bmm_timer;
-#endif
     bmm_timer.Start();
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
@@ -277,11 +274,8 @@ int main32(int argc, char* argv[])
 //    printf("result C_csrVal nnz: %d\n", C_nnz);
 
     // ------
-#ifdef CPUTIMER
-    CpuTimer csr_timer;
-#else
+
     GpuTimer csr_timer;
-#endif
     csr_timer.Start();
 
     for (int i=0; i<TEST_TIMES; i++) {
@@ -536,11 +530,8 @@ int main64(int argc, char* argv[])
     printf("cbrt(nblockrows) = %d\n", gridDim);
 
     // ------
-#ifdef CPUTIMER
-    CpuTimer bmm_timer;
-#else
+
     GpuTimer bmm_timer;
-#endif
     bmm_timer.Start();
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
@@ -625,11 +616,8 @@ int main64(int argc, char* argv[])
 //    printf("result C_csrVal nnz: %d\n", C_nnz);
 
     // ------
-#ifdef CPUTIMER
-    CpuTimer csr_timer;
-#else
+
     GpuTimer csr_timer;
-#endif
     csr_timer.Start();
 
     for (int i=0; i<TEST_TIMES; i++) {

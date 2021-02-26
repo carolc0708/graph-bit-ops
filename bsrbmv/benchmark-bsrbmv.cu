@@ -143,11 +143,7 @@ int main32(int argc, char* argv[])
     setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
 
     // ------
-#ifdef CPUTIMER
-    CpuTimer bmv_timer;
-#else
     GpuTimer bmv_timer;
-#endif
     bmv_timer.Start();
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
@@ -182,7 +178,7 @@ int main32(int argc, char* argv[])
 
     // dummy multiplication variables
     // y = α ∗ op ( A ) ∗ x + β ∗ y
-#ifdef TEST_TIMES > 1
+#if TEST_TIMES > 1
     float alpha = 1.0, beta = 1.0;
 #else
     float alpha = 1.0, beta = 0.0;
@@ -196,11 +192,8 @@ int main32(int argc, char* argv[])
     setDeviceValArr<int, float><<<1,1>>>(dY, nrows, 0);
 
     // ------
-#ifdef CPUTIMER
-    CpuTimer csr_timer;
-#else
+
     GpuTimer csr_timer;
-#endif
     csr_timer.Start();
 
     for (int i=0; i<TEST_TIMES; i++) {
@@ -389,11 +382,8 @@ int main64(int argc, char* argv[])
     setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
 
     // ------
-#ifdef CPUTIMER
-    CpuTimer bmv_timer;
-#else
+
     GpuTimer bmv_timer;
-#endif
     bmv_timer.Start();
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
@@ -429,7 +419,7 @@ int main64(int argc, char* argv[])
 
     // dummy multiplication variables
     // y = α ∗ op ( A ) ∗ x + β ∗ y
-#ifdef TEST_TIMES > 1
+#if TEST_TIMES > 1
     float alpha = 1.0, beta = 1.0;
 #else
     float alpha = 1.0, beta = 0.0;
@@ -443,11 +433,7 @@ int main64(int argc, char* argv[])
     setDeviceValArr<int, float><<<1,1>>>(dY, nrows, 0);
 
     // ------
-#ifdef CPUTIMER
-    CpuTimer csr_timer;
-#else
     GpuTimer csr_timer;
-#endif
     csr_timer.Start();
 
     for (int i=0; i<TEST_TIMES; i++) {
