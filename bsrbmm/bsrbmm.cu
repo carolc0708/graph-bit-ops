@@ -249,11 +249,13 @@ __global__ void tril_csr(const Index* A_rowptr, const Index* A_colind, const T* 
 
 /* Extended method, non optimized */
 template <typename T>
-__global__ void reuduceSum(const T *gArr, int arraySize, T *gOut) {
-    gOut[0] = (T)0;
+__global__ void reuduceSum(const T *gArr, const int arraySize, int *gOut) {
+    int sum = 0;
     for (int i=0; i<arraySize; i++) {
-        gOut[0] += gArr[i];
+        sum += (int)gArr[i];
     }
+    *gOut = sum;
+//    printf("sum: %d\n", *gOut);
 }
 
 /* Extended method to set diagonal elem to 0 */
@@ -273,6 +275,19 @@ __global__ void maskReduceSum(const int* mask_rowptr, const int* mask_colind, co
     for(int i=0; i<nrows; i++) {
         for(int j=mask_rowptr[i]; j<mask_rowptr[i+1]; j++) {
             if (mask_colind[j] == colind[j]) gOut[0] += csrval[j];
+        }
+    }
+}
+
+/* For debug, gather result nnz by row */
+__global__ void gatherNnzbyBlockrow(const int* rowptr, const int* colind, float* csrval,
+                                  const int nrows, const int nblockrows, const int blocksize,
+                                  float* resvec) {
+
+    for (int i=0; i<nblockrows; i++) {
+        int rowendpoint = (i+1)*blocksize < nrows ? (i+1)*blocksize : nrows;
+        for(int j=rowptr[i*blocksize]; j<rowptr[rowendpoint]; j++) {
+            resvec[i] += csrval[j];
         }
     }
 }

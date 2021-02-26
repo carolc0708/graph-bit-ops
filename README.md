@@ -9,7 +9,7 @@
 * `make` to get `bsrbmv32`, `bsrbmv64`
 * `./bsrbmv32 {/path/to/matrix/file.mtx}`
 
-## BSR BMM
+## BSR BMM (verified)
 * in directory `/bsrbmm`
 * `make` to get `bsrbmm32`, `bsrbmm64`
 * `./bsrbmm32 {/path/to/matrix/file.mtx}`

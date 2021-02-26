@@ -1,7 +1,7 @@
 #include <iostream>
 #include <sys/time.h>
 
-#define TEST_TIMES 5
+#define TEST_TIMES 1
 using namespace std;
 
 #include <cuda.h>
@@ -12,6 +12,9 @@ using namespace std;
 #include "mmio_highlevel.h"
 #include "csr2bsr_batch.cu"
 
+//======================================================================================
+// bsrbmm32
+//======================================================================================
 int main32(int argc, char* argv[])
 {
 
@@ -295,15 +298,24 @@ int main32(int argc, char* argv[])
     // ------
 
     // the result include C_csrVal, C_csrRowPtr, C_csrColInd
+//    printResVec<int><<<1,1>>>(C_csrRowPtr, nrows+1);
+//    printResVec<int><<<1,1>>>(C_csrColInd, C_nnz);
 //    printf("C_csrVal: \n"); printResVec<float><<<1,1>>>(C_csrVal, C_nnz);
-    float* result_cusparsecsrspgemmfloat;
-    cudaMalloc((void**)&result_cusparsecsrspgemmfloat, sizeof(float) * 1);
+
+//    float* resvec;
+//    cudaMalloc((void**)&resvec, sizeof(float) * nblockrows);
+//    setDeviceValArr<int, float><<<1,1>>>(resvec, nblockrows, 0.0);
+//    gatherNnzbyBlockrow<<<1,1>>>(C_csrRowPtr, C_csrColInd, C_csrVal,
+//                                 nrows, nblockrows, blocksize, resvec);
+//    printf("C_csrVal (gather by blockrow): \n"); printResVec<float><<<1,1>>>(resvec, nblockrows);
+
+
+    int* result_cusparsecsrspgemmfloat;
+    cudaMalloc((void**)&result_cusparsecsrspgemmfloat, sizeof(int) * 1);
     reuduceSum<float><<<1,1>>>(C_csrVal, C_nnz, result_cusparsecsrspgemmfloat);
-//    maskReduceSum<<<1,1>>>(A_csrRowPtr, A_csrColInd, C_csrRowPtr, C_csrColInd, C_csrVal, nrows, result_cusparsecsrspgemmfloat);
-    float ntris_csr;
-    cudaMemcpy(&ntris_csr, result_cusparsecsrspgemmfloat, sizeof(float) * 1, cudaMemcpyDeviceToHost);
-    printf("ntris_csr: %d\n", (int)ntris_csr);
-    cudaFree(result_cusparsecsrspgemmfloat);
+    int ntris_csr;
+    cudaMemcpy(&ntris_csr, result_cusparsecsrspgemmfloat, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+    printf("ntris_csr: %d\n", ntris_csr);
 
 
     //============================================= check result
@@ -353,6 +365,9 @@ int main32(int argc, char* argv[])
     // free all results
 }
 
+//======================================================================================
+// bsrbmm64
+//======================================================================================
 int main64(int argc, char* argv[])
 {
 
@@ -637,15 +652,12 @@ int main64(int argc, char* argv[])
     // ------
 
     // the result include C_csrVal, C_csrRowPtr, C_csrColInd
-//    printf("C_csrVal: \n"); printResVec<float><<<1,1>>>(C_csrVal, C_nnz);
-    float* result_cusparsecsrspgemmfloat;
-    cudaMalloc((void**)&result_cusparsecsrspgemmfloat, sizeof(float) * 1);
+    int* result_cusparsecsrspgemmfloat;
+    cudaMalloc((void**)&result_cusparsecsrspgemmfloat, sizeof(int) * 1);
     reuduceSum<float><<<1,1>>>(C_csrVal, C_nnz, result_cusparsecsrspgemmfloat);
-//    maskReduceSum<<<1,1>>>(A_csrRowPtr, A_csrColInd, C_csrRowPtr, C_csrColInd, C_csrVal, nrows, result_cusparsecsrspgemmfloat);
-    float ntris_csr;
-    cudaMemcpy(&ntris_csr, result_cusparsecsrspgemmfloat, sizeof(float) * 1, cudaMemcpyDeviceToHost);
-    printf("ntris_csr: %d\n", (int)ntris_csr);
-    cudaFree(result_cusparsecsrspgemmfloat);
+    int ntris_csr;
+    cudaMemcpy(&ntris_csr, result_cusparsecsrspgemmfloat, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+    printf("ntris_csr: %d\n", ntris_csr);
 
 
     //============================================= check result
