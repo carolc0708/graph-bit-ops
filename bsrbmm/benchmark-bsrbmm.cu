@@ -191,6 +191,12 @@ int main32(int argc, char* argv[])
     dim3 grid(gridDim, gridDim, gridDim);
     printf("cbrt(nblockrows) = %d\n", gridDim);
 
+int *runtime;
+#ifdef PROF
+    cudaMalloc(&runtime, nblockrows * sizeof(int));
+    setDeviceValArr<int, int><<<1,1>>>(runtime, nblockrows, 0);
+#endif
+
     // ------
 
     GpuTimer bmm_timer;
@@ -201,13 +207,16 @@ int main32(int argc, char* argv[])
         bmm32_sparse<int, int><<<grid, 32>>>(tA, tB, fC,
                                                A_bsrRowPtr, A_bsrColInd,
                                                B_bsrRowPtr, B_bsrColInd,
-                                               nblockrows, nblocks, nrows);
+                                               nblockrows, nblocks, nrows, runtime);
     }
 
     bmm_timer.Stop();
     double bmm32_time = bmm_timer.ElapsedMillis()/double(TEST_TIMES);
 
     // ------
+#ifdef PROF
+    printTimeReport<<<1,1>>>(runtime, nblockrows); cudaFree(runtime);
+#endif
 
 //    printf("fC: \n"); printResVec<int><<<1,1>>>(fC, nblockrows);
     int* result_bsrbmm32;
@@ -544,6 +553,12 @@ int main64(int argc, char* argv[])
     dim3 grid(gridDim, gridDim, gridDim);
     printf("cbrt(nblockrows) = %d\n", gridDim);
 
+int *runtime;
+#ifdef PROF
+    cudaMalloc(&runtime, nblockrows * sizeof(int));
+    setDeviceValArr<int, int><<<1,1>>>(runtime, nblockrows, 0);
+#endif
+
     // ------
 
     GpuTimer bmm_timer;
@@ -554,13 +569,16 @@ int main64(int argc, char* argv[])
         bmm64_sparse<int, int><<<grid, 32>>>(tA, tB, fC,
                                                A_bsrRowPtr, A_bsrColInd,
                                                B_bsrRowPtr, B_bsrColInd,
-                                               nblockrows, nblocks, nrows);
+                                               nblockrows, nblocks, nrows, runtime);
     }
 
     bmm_timer.Stop();
     double bmm64_time = bmm_timer.ElapsedMillis()/double(TEST_TIMES);
 
     // ------
+#ifdef PROF
+    printTimeReport<<<1,1>>>(runtime, nblockrows); cudaFree(runtime);
+#endif
 
 //    printf("fC: \n"); printResVec<int><<<1,1>>>(fC, nblockrows);
     int* result_bsrbmm64;

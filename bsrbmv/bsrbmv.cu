@@ -108,10 +108,14 @@ template <typename Index, typename T>
 __global__ void bmv32_sparse(const unsigned* __restrict__ A, const unsigned* __restrict__ B,
             T* C, const int A_height, const int A_width, const int B_width,
             const Index* __restrict__ rowptr, const Index* __restrict__ colind,
-            const Index nblockrows, const Index nblocks)
+            const Index nblockrows, const Index nblocks, int* runtime)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
+#ifdef PROF
+        clock_t start_time = clock();
+#endif
+
         GET_LANEID;
 
         // load
@@ -134,6 +138,12 @@ __global__ void bmv32_sparse(const unsigned* __restrict__ A, const unsigned* __r
             // store
             Csub[laneid] += (T)(Cm[0]); //Csub[laneid] = (T)(Cm[0]>0);
         }
+
+#ifdef PROF
+        clock_t stop_time = clock();
+        runtime[bx] = (int)(stop_time - start_time);
+//        printf("[%d, %d] %d ", bx, laneid, (int)(stop_time - start_time));
+#endif
     }
 }
 
@@ -143,10 +153,15 @@ template <typename Index, typename T>
 __global__ void bmv64_sparse(const ullong* __restrict__ A, const ullong* __restrict__ B,
                             T* C, const int A_height, const int A_width, const int B_width,
                             const Index* __restrict__ rowptr, const Index* __restrict__ colind,
-                            const Index nblockrows, const Index nblocks)
+                            const Index nblockrows, const Index nblocks, int* runtime)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
+
+#ifdef PROF
+        clock_t start_time = clock();
+#endif
+
         GET_LANEID;
 
         // load
@@ -172,5 +187,11 @@ __global__ void bmv64_sparse(const ullong* __restrict__ A, const ullong* __restr
             Csub[laneid] += (T)t0;
             Csub[laneid+32] += (T)t1;
         }
+
+#ifdef PROF
+        clock_t stop_time = clock();
+        runtime[bx] = (int)(stop_time - start_time);
+//        printf("[%d, %d] %d ", bx, laneid, (int)(stop_time - start_time));
+#endif
     }
 }

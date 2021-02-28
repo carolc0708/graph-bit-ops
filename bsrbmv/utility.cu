@@ -347,3 +347,21 @@ __global__ void setDeviceValArr(T *arr, const Index N, const T val)
     for (Index i=0; i<N; i++) arr[i] = val;
 }
 
+//======================================================================================
+// Print function for timing report
+//======================================================================================
+__global__ void printTimeReport(const int *arr, const int N)
+{
+    float minv = (float)arr[0], maxv = (float)arr[0], sum = 0.0;
+//    printf("======================\n");
+    for (int i=0; i<N; i++) {
+//        printf("[%5d] %d\n", i, arr[i]);
+        sum += arr[i];
+        maxv = max(maxv, (float)arr[i]);
+        minv = min(minv, (float)arr[i]);
+    }
+    printf("======================\n");
+    printf("min: %d, max: %d, avg: %.2f\n", (int)minv, (int)maxv, sum/N);
+    printf("======================\n");
+
+}

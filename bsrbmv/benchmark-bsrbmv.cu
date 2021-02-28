@@ -1,7 +1,7 @@
 #include <iostream>
 #include <sys/time.h>
 
-#define TEST_TIMES 5
+#define TEST_TIMES 1
 using namespace std;
 
 #include <cuda.h>
@@ -142,18 +142,28 @@ int main32(int argc, char* argv[])
     cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
     setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
 
+    int *runtime;
+#ifdef PROF
+    cudaMalloc(&runtime, nblockrows * sizeof(int));
+    setDeviceValArr<int, int><<<1,1>>>(runtime, nblockrows, 0);
+#endif
+
     // ------
     GpuTimer bmv_timer;
     bmv_timer.Start();
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-        bmv32_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+        bmv32_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime);
     }
 
     bmv_timer.Stop();
     double bmv32_time = bmv_timer.ElapsedMillis()/double(TEST_TIMES);
     // ------
+#ifdef PROF
+    printTimeReport<<<1,1>>>(runtime, nblockrows); cudaFree(runtime);
+#endif
+
 
     // free storage
     cudaFree(tA);
@@ -381,6 +391,12 @@ int main64(int argc, char* argv[])
     cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
     setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
 
+    int *runtime;
+#ifdef PROF
+    cudaMalloc(&runtime, nblockrows * sizeof(int));
+    setDeviceValArr<int, int><<<1,1>>>(runtime, nblockrows, 0);
+#endif
+
     // ------
 
     GpuTimer bmv_timer;
@@ -388,13 +404,17 @@ int main64(int argc, char* argv[])
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-        bmv64_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+        bmv64_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime);
     }
 
     bmv_timer.Stop();
     double bmv64_time = bmv_timer.ElapsedMillis()/double(TEST_TIMES);
 
     // ------
+
+#ifdef PROF
+    printTimeReport<<<1,1>>>(runtime, nblockrows); cudaFree(runtime);
+#endif
 
     // free memory
     cudaFree(tA);

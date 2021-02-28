@@ -102,11 +102,13 @@ template <typename Index, typename T>
 __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
             const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
             const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
-            const Index nblockrows, const Index nblocks, const int nrows)
+            const Index nblockrows, const Index nblocks, const int nrows, int* runtime)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
-
+#ifdef PROF
+        clock_t start_time = clock();
+#endif
         GET_LANEID;
         T* Csub = &C[0];
 
@@ -148,6 +150,12 @@ __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __r
         atomicAdd(Csub+bx, sum);
 //        __syncthreads();
 
+#ifdef PROF
+        clock_t stop_time = clock();
+        runtime[bx] = (int)(stop_time - start_time);
+//        printf("[%d, %d] %d ", bx, laneid, (int)(stop_time - start_time));
+#endif
+
     } // if bx < nblockrows + 1
 }
 
@@ -158,10 +166,13 @@ template <typename Index, typename T>
 __global__ void bmm64_sparse(const ullong* __restrict__ A, const ullong* __restrict__ B, T* C,
                             const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
                             const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
-                            const Index nblockrows, const Index nblocks, const int nrows)
+                            const Index nblockrows, const Index nblocks, const int nrows, int* runtime)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
+#ifdef PROF
+        clock_t start_time = clock();
+#endif
 
         GET_LANEID;
         T* Csub = &C[0];
@@ -209,6 +220,11 @@ __global__ void bmm64_sparse(const ullong* __restrict__ A, const ullong* __restr
         atomicAdd(Csub+bx, sum);
 //        __syncthreads();
 
+#ifdef PROF
+        clock_t stop_time = clock();
+        runtime[bx] = (int)(stop_time - start_time);
+//        printf("[%d, %d] %d ", bx, laneid, (int)(stop_time - start_time));
+#endif
     } // if bx < nblockrows + 1
 }
 

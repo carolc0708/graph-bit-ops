@@ -3,7 +3,7 @@ CC = nvcc
 FLAGS = -arch=sm_60 -O3 -std=c++11 -w # -Xptxas --maxrregcount=96
 LINK = -lcublas -lcusparse -lcudart
 
-all: bsrbmv32 bsrbmv64
+all: bsrbmv32 bsrbmv64 bsrbmv32prof bsrbmv64prof
 
 # default
 bsrbmv: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
@@ -15,6 +15,13 @@ bsrbmv32: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 
 bsrbmv64: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -o $@
+
+# prof each thread block
+bsrbmv32prof: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=32 -DPROF -o $@
+
+bsrbmv64prof: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -DPROF -o $@
 
 # nonbatch csr2bsr for small matrices read
 bsrbmv32nonbatch: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
@@ -31,5 +38,5 @@ bsrbmv64debug: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -DDEBUG -o $@
 
 clean:
-	rm -f bsrbmv bsrbmv32 bsrbmv64 \
+	rm -f bsrbmv bsrbmv32 bsrbmv64 bsrbmv32prof bsrbmv64prof \
 	    bsrbmv32nonbatch bsrbmv64nonbatch bsrbmv32debug bsrbmv64debug *.o
