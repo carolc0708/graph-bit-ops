@@ -1,7 +1,7 @@
 #include <iostream>
 #include <sys/time.h>
 
-#define TEST_TIMES 1
+#define TEST_TIMES 5
 using namespace std;
 
 #include <cuda.h>
@@ -142,14 +142,80 @@ int main32(int argc, char* argv[])
     cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
     setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
 
+    //  ===== configure workload =====
+    int MIN = 10;
+//    int *workloadsizeptr;
+//    cudaMalloc((void**)&workloadsizeptr, 1 * sizeof(int));
+//    count_workload_split<<<1,1>>>(workloadsizeptr, bsrRowPtr, nblockrows, bsrColInd, MIN);
+//
+//    int workloadsize;
+//    cudaMemcpy(&workloadsize, workloadsizeptr, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+//    printf("workloadsize: %d (nblockrows: %d)\n", workloadsize, nblockrows);
+//
+//    int *workloadptr;
+//    cudaMalloc((void**)&workloadptr,  workloadsize * sizeof(int));
+//    setDeviceValArr<int, int><<<1,1>>>(workloadptr, workloadsize, 0);
+//    workload_split<<<1,1>>>(workloadptr, bsrRowPtr, nblockrows, bsrColInd, MIN);
+////    printResVec<int><<<1,1>>>(workloadptr, workloadsize);
+//
+//    int gridDim_ws = (int)ceil(cbrt((double)workloadsize));
+//    dim3 grid_ws(gridDim_ws, gridDim_ws, gridDim_ws);
+//    printf("cbrt(workloadsize) = %d\n", gridDim_ws);
+
+    int MAX = atoi(argv[2]);
+
+    // count (estimate) workload
+    int *workloadsizeptr;
+    cudaMalloc((void**)&workloadsizeptr, 1 * sizeof(int));
+    count_workload_merge_and_split<<<1,1>>>(workloadsizeptr, bsrRowPtr, nblockrows, bsrColInd, MAX);
+
+    int workloadsize;
+    cudaMemcpy(&workloadsize, workloadsizeptr, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+    printf("workloadsize: %d (nblockrows: %d)\n", workloadsize, nblockrows);
+
+    // set grid size
+    int gridDim_ws = (int)ceil(cbrt((double)workloadsize));
+    dim3 grid_ws(gridDim_ws, gridDim_ws, gridDim_ws);
+    printf("cbrt(workloadsize) = %d\n", gridDim_ws);
+
+    // get workload info list
+    int *workload_size_list;
+    cudaMalloc((void**)&workload_size_list, workloadsize * sizeof(int));
+    setDeviceValArr<int, int><<<1,1>>>(workload_size_list, workloadsize, 0);
+
+    int *workload_info_list;
+    cudaMalloc((void**)&workload_info_list,  workloadsize * (32+2) * sizeof(int));
+    setDeviceValArr<int, int><<<1,1>>>(workload_info_list, workloadsize * (32+2), 0);
+
+    int *workload_info_list_size_ptr;
+    cudaMalloc((void**)&workload_info_list_size_ptr, 1 * sizeof(int));
+    getWorkloadInfo<<<1,1>>>(bsrRowPtr, nblockrows, MAX,
+                             workload_size_list, workload_info_list, workloadsize, workload_info_list_size_ptr);
+
+    int workload_info_list_size;
+    cudaMemcpy(&workload_info_list_size, workload_info_list_size_ptr, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+    printf("workload_info_list_size: %d\n", workload_info_list_size);
+//    printResVec<int><<<1,1>>>(workload_size_list, workloadsize);
+//    printResVec<int><<<1,1>>>(workload_info_list, workload_info_list_size);
+    printWorkloadInfoList<<<1,1>>>(workload_info_list, workload_size_list, workloadsize);
+
+    // accumulated workload_size_list to indicate start and end of workload_info_list
+    int *workload_size_list_acc;
+    cudaMalloc((void**)&workload_size_list_acc, (workloadsize+1) * sizeof(int));
+    setWorkloadSizeListAcc<<<1,1>>>(workload_size_list_acc, workload_size_list, workloadsize);
+//    printResVec<int><<<1,1>>>(workload_size_list_acc, workloadsize+1);
+
+
+    //  ===== configure workload =====
+
     int *runtime;
     int *load;
 #ifdef PROF
-    cudaMalloc(&runtime, nblockrows * sizeof(int));
-    setDeviceValArr<int, int><<<1,1>>>(runtime, nblockrows, 0);
+    cudaMalloc(&runtime, workloadsize * sizeof(int));
+    setDeviceValArr<int, int><<<1,1>>>(runtime, workloadsize, 0);
 
     cudaMalloc(&load, nblockrows * sizeof(int));
-    setDeviceValArr<int, int><<<1,1>>>(load, nblockrows, 0);
+    setDeviceValArr<int, int><<<1,1>>>(load, workloadsize, 0);
 #endif
 
     // ------
@@ -158,14 +224,20 @@ int main32(int argc, char* argv[])
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-        bmv32_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
+//        bmv32_sparse_workloadsplit<int, float><<<grid_ws, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd,
+//                                   workloadptr, workloadsize, MIN,
+//                                   nblockrows, nblocks, runtime, load);
+
+        bmv32_sparse_workloadmergeNsplit<int, float><<<grid_ws, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd,
+                                        workload_info_list, workload_size_list_acc,
+                                        workloadsize, MAX, nblockrows, nblocks, runtime, load);
     }
 
     bmv_timer.Stop();
     double bmv32_time = bmv_timer.ElapsedMillis()/double(TEST_TIMES);
     // ------
 #ifdef PROF
-    printTimenLoadReport<<<1,1>>>(runtime, load, nblockrows); cudaFree(runtime); cudaFree(load);
+    printTimenLoadReport<<<1,1>>>(runtime, load, workloadsize); cudaFree(runtime); cudaFree(load);
 #endif
 
 
@@ -178,6 +250,11 @@ int main32(int argc, char* argv[])
     cudaMemcpy(result_bsrbmv32, fC, nrows * 1 * sizeof(float), cudaMemcpyDeviceToHost);
 //    printf("result_bsrbmv32: \n"); printResVec<float><<<1,1>>>(fC, nrows);
     printf("bsrbmv32 nnz in vec: %d\n", countNnzinVec<float>(result_bsrbmv32, nrows));
+
+//    cudaFree(workloadptr);
+
+//    int k;
+//    std::cin >> k;
 
     // ============================================= cuSPARSE csr spmv-float
     // metadata for cuSPARSE API

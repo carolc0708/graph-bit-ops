@@ -3,7 +3,9 @@ CC = nvcc
 FLAGS = -arch=sm_60 -O3 -std=c++11 -w # -Xptxas --maxrregcount=96
 LINK = -lcublas -lcusparse -lcudart
 
-all: bsrbmv32 bsrbmv64 bsrbmv32prof bsrbmv64prof
+# all: bsrbmv32 bsrbmv64 bsrbmv32prof bsrbmv64prof
+
+all: bsrbmv32ws bsrbmv64ws bsrbmv32wsprof bsrbmv64wsprof bsrbmv32 bsrbmv64 bsrbmv32prof bsrbmv64prof
 
 # default
 bsrbmv: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
@@ -23,6 +25,20 @@ bsrbmv32prof: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 bsrbmv64prof: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -DPROF -o $@
 
+# workload split
+bsrbmv32ws: workload-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) workload-bsrbmv.cu -DBLOCKSIZE=32 -o $@
+
+bsrbmv64ws: workload-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) workload-bsrbmv.cu -DBLOCKSIZE=64 -o $@
+
+# workload split, prof each thread block
+bsrbmv32wsprof: workload-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) workload-bsrbmv.cu -DBLOCKSIZE=32 -DPROF -o $@
+
+bsrbmv64wsprof: workload-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) workload-bsrbmv.cu -DBLOCKSIZE=64 -DPROF -o $@
+
 # nonbatch csr2bsr for small matrices read
 bsrbmv32nonbatch: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=32 -DNONBATCH -o $@
@@ -38,5 +54,5 @@ bsrbmv64debug: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -DDEBUG -o $@
 
 clean:
-	rm -f bsrbmv bsrbmv32 bsrbmv64 bsrbmv32prof bsrbmv64prof \
-	    bsrbmv32nonbatch bsrbmv64nonbatch bsrbmv32debug bsrbmv64debug *.o
+	rm -f bsrbmv bsrbmv32 bsrbmv64 bsrbmv32prof bsrbmv64prof bsrbmv32ws \
+	    bsrbmv64ws bsrbmv32wsprof bsrbmv64wsprof *.o

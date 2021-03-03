@@ -173,7 +173,7 @@ int countNnzinVec(const T* vec, const int N)
 template <typename T>
 __global__ void printResVec(const T* vec, const int N)
 {
-    for(int i=0; i<N; i++) {printf("%d ", (int)vec[i]); }
+    for(int i=0; i<N; i++) { printf("%d ", (int)vec[i]); }
     printf("\n");
 }
 
@@ -364,4 +364,57 @@ __global__ void printTimeReport(const int *arr, const int N)
     printf("min: %d, max: %d, avg: %.2f\n", (int)minv, (int)maxv, sum/N);
     printf("======================\n");
 
+}
+
+__global__ void printTimenLoadReport(const int *arr, const int *load, const int N)
+{
+    float minv = (float)arr[0], maxv = (float)arr[0], sum = 0.0;
+    float minl = (float)load[0], maxl = (float)load[0], suml = 0.0;
+    int maxvi = 0, maxli = 0;
+//    printf("======================\n");
+    for (int i=0; i<N; i++) {
+//        printf("[%5d] %d %d\n", i, arr[i], load[i]);
+        sum += arr[i];
+        maxv = max(maxv, (float)arr[i]);
+        if (maxv == (float)arr[i]) maxvi = i;
+        minv = min(minv, (float)arr[i]);
+
+        suml += load[i];
+        maxl = max(maxl, (float)load[i]);
+        if (maxl == (float)load[i]) maxli = i;
+        minl = min(minl, (float)load[i]);
+    }
+    printf("======================\n");
+    printf("min_t: %d, max_t: %d, avg_t: %.2f\n", (int)minv, (int)maxv, sum/N);
+    printf("min_l: %d, max_l: %d, avg_l: %.2f\n", (int)minl, (int)maxl, suml/N);
+    printf("max_t index: %d, max_l index: %d\n", maxvi, maxli);
+    printf("======================\n");
+
+}
+
+//======================================================================================
+// Print workload info list
+//======================================================================================
+__global__ void printWorkloadInfoList(const int *workload_info_list, const int *workload_size_list, const int workloadsize)
+{
+    int cnt = 0;
+    printf("======================\n");
+    for (int i=0; i<workloadsize; i++) {
+        printf("%d ", workload_info_list[cnt++]); // row
+        printf("%d ", workload_info_list[cnt++]); // row_start
+        for(int j=0; j<workload_size_list[i]; j++) {
+            printf("%d ", workload_info_list[cnt++]);
+        }
+        printf("| ");
+    }
+    printf("\n======================\n");
+
+}
+
+__global__ void setWorkloadSizeListAcc(int* workload_size_list_acc, const int *workload_size_list, const int workloadsize)
+{
+    workload_size_list_acc[0] = 0;
+    for (int i=1; i<workloadsize+1; i++) {
+        workload_size_list_acc[i] = workload_size_list_acc[i-1] + workload_size_list[i-1] + 2;
+    }
 }
