@@ -197,7 +197,7 @@ int main32(int argc, char* argv[])
     printf("workload_info_list_size: %d\n", workload_info_list_size);
 //    printResVec<int><<<1,1>>>(workload_size_list, workloadsize);
 //    printResVec<int><<<1,1>>>(workload_info_list, workload_info_list_size);
-    printWorkloadInfoList<<<1,1>>>(workload_info_list, workload_size_list, workloadsize);
+//    printWorkloadInfoList<<<1,1>>>(workload_info_list, workload_size_list, workloadsize);
 
     // accumulated workload_size_list to indicate start and end of workload_info_list
     int *workload_size_list_acc;

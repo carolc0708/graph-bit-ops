@@ -422,7 +422,7 @@ __global__ void bmv32_sparse_workloadmergeNsplit(const unsigned* __restrict__ A,
 #ifdef PROF
         clock_t stop_time = clock();
         runtime[bx] = (int)(stop_time - start_time);
-        load[bx] = 0; // temp
+        load[bx] = row_start + workload - workload_info_list[list_start+1]; // temp
 //        GET_LANEID;
 //        if (laneid == 1 && load[bx] == 0) {printf("[%d] %d %d\n", bx, (int)(stop_time - start_time), (int)(row_end-row_start));}
 #endif
