@@ -417,8 +417,6 @@ __global__ void bmv32_sparse_workloadmergeNsplit(const unsigned* __restrict__ A,
         atomicAdd(Csub+laneid, (T)(Cm[0]));
     }
 
-
-
 #ifdef PROF
         clock_t stop_time = clock();
         runtime[bx] = (int)(stop_time - start_time);
@@ -444,11 +442,11 @@ __global__ void count_workload_merge_and_split(int* workloadsize, int* rowptr, c
 
         if (load < MAX) { // merge
             int temp = 0;
-            while (temp + load <= MAX && i < nblockrows) {
+            while (temp + load <= MAX && i < nblockrows) { // when it is last
                 temp += load;
                 i += 1;
 
-                load = i < nblockrows ? rowptr[i+1]-rowptr[i] : MAX+1; // force leave
+                load = i < nblockrows ? rowptr[i+1]-rowptr[i] : 0; // force leave
             }
             i -= 1;
             cnt += 1;
@@ -481,8 +479,6 @@ __global__ void getWorkloadInfo (const int* __restrict__ rowptr, const int nbloc
     int row_start, row_end, load;
     int i = 0;
     for(i=0; i<nblockrows; i++) {
-//        printf("i:%d, wid:%d, cnt: %d\n", i, wid, cnt);
-
         row_start = rowptr[i]; row_end = rowptr[i+1];
         load = row_end - row_start;
 
@@ -503,7 +499,7 @@ __global__ void getWorkloadInfo (const int* __restrict__ rowptr, const int nbloc
                 i += 1;
 
                 // next iter
-                load = i < nblockrows ? rowptr[i+1]-rowptr[i] : MAX+1; // force leave
+                load = i < nblockrows ? rowptr[i+1]-rowptr[i] : 0; // force leave
             }
             i -= 1;
 
@@ -530,23 +526,19 @@ __global__ void getWorkloadInfo (const int* __restrict__ rowptr, const int nbloc
             workload_info_list[cnt++] = MAX; // workload
 
         }
-//        printf("i:%d, wid:%d, cnt: %d\n", i, wid, cnt);
-        if ((rest && wid == workloadsize-1) || (!rest && wid == workloadsize)) break;
     }
 
-//    printf("before rest, i:%d, wid:%d, cnt:%d\n", i, wid, cnt);
     if (rest) {
         workload_size_list[wid++] = 1;
-        workload_info_list[cnt++] = i; // row
+        workload_info_list[cnt++] = i-1; // row
         workload_info_list[cnt++] = row_start + load/MAX * MAX; // row_start
         workload_info_list[cnt++] = rest; // workload
     }
-//    printf("after rest, i:%d, wid:%d, cnt:%d\n", i, wid, cnt);
 
     *workload_info_list_size = cnt;
 
     // workload_size_list
     // an array of sublist_size+2, having [row, row_start,  workload0, workload1 ...]
-    // set row_start to real row for sublistsize > 1 (<-- for simplicity)
+
 }
 

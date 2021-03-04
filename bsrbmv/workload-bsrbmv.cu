@@ -143,7 +143,7 @@ int main32(int argc, char* argv[])
     setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
 
     //  ===== configure workload =====
-    int MIN = 10;
+//    int MIN = 10;
 //    int *workloadsizeptr;
 //    cudaMalloc((void**)&workloadsizeptr, 1 * sizeof(int));
 //    count_workload_split<<<1,1>>>(workloadsizeptr, bsrRowPtr, nblockrows, bsrColInd, MIN);
@@ -168,6 +168,9 @@ int main32(int argc, char* argv[])
     int *workloadsizeptr;
     cudaMalloc((void**)&workloadsizeptr, 1 * sizeof(int));
     count_workload_merge_and_split<<<1,1>>>(workloadsizeptr, bsrRowPtr, nblockrows, bsrColInd, MAX);
+
+//    int k;
+//    std::cin >> k;
 
     int workloadsize;
     cudaMemcpy(&workloadsize, workloadsizeptr, sizeof(int) * 1, cudaMemcpyDeviceToHost);
@@ -253,8 +256,6 @@ int main32(int argc, char* argv[])
 
 //    cudaFree(workloadptr);
 
-//    int k;
-//    std::cin >> k;
 
     // ============================================= cuSPARSE csr spmv-float
     // metadata for cuSPARSE API

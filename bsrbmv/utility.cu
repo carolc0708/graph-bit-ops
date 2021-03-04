@@ -400,12 +400,15 @@ __global__ void printWorkloadInfoList(const int *workload_info_list, const int *
     int cnt = 0;
     printf("======================\n");
     for (int i=0; i<workloadsize; i++) {
-        printf("%d ", workload_info_list[cnt++]); // row
-        printf("%d ", workload_info_list[cnt++]); // row_start
-        for(int j=0; j<workload_size_list[i]; j++) {
-            printf("%d ", workload_info_list[cnt++]);
-        }
-        printf("| ");
+//        if (i == workloadsize-1 || i == workloadsize -2) {
+            printf("%d ", workload_info_list[cnt++]); // row
+            printf("%d ", workload_info_list[cnt++]); // row_start
+            for(int j=0; j<workload_size_list[i]; j++) {
+                printf("%d ", workload_info_list[cnt++]);
+            }
+            printf("| ");
+//        }
+
     }
     printf("\n======================\n");
 
