@@ -362,7 +362,7 @@ __global__ void workload_merge(int* workloadptr, int* rowptr, const int nblockro
 //======================================================================================
 // Considering Workload Balancing -- workload split and merge (evenly distribute)
 //======================================================================================
-// naive
+// naive 32
 template <typename Index, typename T>
 __global__ void bmv32_sparse_workloadmergeNsplit(const unsigned* __restrict__ A, const unsigned* __restrict__ B,
             T* C, const Index* __restrict__ rowptr, const Index* __restrict__ colind,
@@ -427,8 +427,74 @@ __global__ void bmv32_sparse_workloadmergeNsplit(const unsigned* __restrict__ A,
     }
 }
 
+// naive 64
+template <typename Index, typename T>
+__global__ void bmv64_sparse_workloadmergeNsplit(const ullong* __restrict__ A, const ullong* __restrict__ B,
+            T* C, const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+            const Index* __restrict__ workload_info_list, const Index* __restrict__ workload_size_list_acc,
+            const Index workloadsize, const Index MAX,
+            const Index nblockrows, const Index nblocks, int* runtime, int* load)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < workloadsize) {
+#ifdef PROF
+        clock_t start_time = clock();
+#endif
+
+    // set metadata
+    int list_start = workload_size_list_acc[bx], list_end = workload_size_list_acc[bx+1];
+    int row = workload_info_list[list_start];
+    int row_start = workload_info_list[list_start+1];
+    int numworkload;
+    if (list_end - list_start == 3) { // only 1 blockrow
+        numworkload = 1;
+    } else { // more than 1 blockrows
+        numworkload = list_end - list_start - 2;
+    }
+
+    // load
+    GET_LANEID;
+    const ullong* Bsub = &(B[0]);
+
+    int workload = 0;
+    for (int w=0; w<numworkload; w++) {
+        // set pointer
+        row_start += workload; // move 1 step
+        workload = workload_info_list[list_start+2+w]; // get workload
+
+        // load location
+        const ullong* Asub = &(A[row_start*64]);
+        T* Csub = &(C[(row+w)*64]);
+
+        // compute
+        register unsigned Cm[1] = {0}; // allocate 1 register
+        for (int i=row_start; i<row_start+workload; i++) {
+
+            ullong a0 = Asub[(i-row_start)*64+laneid];
+            ullong a1 = Asub[(i-row_start)*64+32+laneid];
+            ullong b0 = Bsub[colind[i]];
+
+            Cm[0] += (__popcll(a0 & b0) << 16) + __popcll(a1 & b0);
+        }
+
+        // store
+        short t0, t1;
+        asm volatile("mov.b32 {%0,%1}, %2;":"=h"(t1),"=h"(t0):"r"(Cm[0]));
+        atomicAdd(Csub+laneid, (T)t0);
+        atomicAdd(Csub+laneid+32, (T)t1);
+    }
+
+#ifdef PROF
+        clock_t stop_time = clock();
+        runtime[bx] = (int)(stop_time - start_time);
+        load[bx] = row_start + workload - workload_info_list[list_start+1]; // temp
+//        GET_LANEID;
+//        if (laneid == 1 && load[bx] == 0) {printf("[%d] %d %d\n", bx, (int)(stop_time - start_time), (int)(row_end-row_start));}
+#endif
+    }
+}
+
 // split_merge
-// or merge_split
 __global__ void count_workload_merge_and_split(int* workloadsize, int* rowptr, const int nblockrows, const int* colind, const int MAX) {
 
     int cnt = 0;
