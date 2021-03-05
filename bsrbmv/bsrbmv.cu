@@ -208,12 +208,10 @@ __global__ void bmv64_sparse(const ullong* __restrict__ A, const ullong* __restr
 //======================================================================================
 // Considering Workload Balancing -- workload split, workload merge (not in use)
 //======================================================================================
-
 template <typename Index, typename T>
-__global__ void bmv32_sparse_workloadsplit(const unsigned* __restrict__ A, const unsigned* __restrict__ B,
-            T* C, const Index* __restrict__ rowptr, const Index* __restrict__ colind,
-            const Index* __restrict__ workloadptr, const Index workloadsize, const Index MIN,
-            const Index nblockrows, const Index nblocks, int* runtime, int* load)
+__global__ void bmv32_sparse_workloadsplit(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                           const Index* __restrict__ colind, const Index* __restrict__ workloadptr,
+                                           const Index workloadsize, const Index MAX, int* runtime, int* load)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < workloadsize) {
@@ -221,41 +219,29 @@ __global__ void bmv32_sparse_workloadsplit(const unsigned* __restrict__ A, const
         clock_t start_time = clock();
 #endif
 
-        // load
-        int row = workloadptr[bx];
-        int row_start = 0, row_end = 0, workload = 0;
+    // load
+    int row = workloadptr[bx*3];
+    int row_start = workloadptr[bx*3+1];
+    int workload = workloadptr[bx*3+2];
 
-        // case 1: normal row
-        // case 2: the first row of split workload
-        if (row >= 0) {
-            row_start = rowptr[row];
-            row_end = rowptr[row+1];
-            workload = row_end - row_start > MIN ? MIN : row_end - row_start;
-        } else { // case 3: the rest row of split workload
-            row_start = rowptr[workloadptr[bx+row]] + MIN*abs(row);
-            row = workloadptr[bx+row]; // real row
-            row_end = rowptr[row+1];
-            workload =((row_start + MIN) > row_end ? (row_end - row_start) : MIN);
-        }
+    // compute
+    GET_LANEID;
+    const unsigned* Asub = &(A[row_start*32]); // block is in continuous layout
+    const unsigned* Bsub = &(B[0]); // 0, when it is mv
+    T* Csub = &(C[row*32]);
+    register unsigned Cm[1] = {0}; // allocate 1 register <-- can parallelize
 
-        GET_LANEID;
-        const unsigned* Asub = &(A[row_start*32]); // block is in continuous layout
-        const unsigned* Bsub = &(B[0]); // 0, when it is mv
-        T* Csub = &(C[row*32]);
-        register unsigned Cm[1] = {0}; // allocate 1 register
+    // compute
+    for (int i=row_start; i<row_start+workload; i++) {
 
-        // compute
-        for (int i=row_start; i<row_start+workload; i++) {
-//            Cm[0] = 0;
-            unsigned r0 = Asub[(i-row_start)*32+laneid]; // block is in continuous layout
-            unsigned r1 = Bsub[(colind[i])]; // only first row is required
+        unsigned r0 = Asub[(i-row_start)*32+laneid]; // block is in continuous layout
+        unsigned r1 = Bsub[(colind[i])]; // only first row is required
 
-            Cm[0] += __popc(r0 & r1);
-            // store
-//            Csub[laneid] += (T)(Cm[0]); //Csub[laneid] = (T)(Cm[0]>0);
+        Cm[0] += __popc(r0 & r1);
+    }
 
-        }
-        atomicAdd(Csub+laneid, (T)(Cm[0]));
+    // store
+    atomicAdd(Csub+laneid, (T)(Cm[0])); // <-- can tag the continuety
 
 #ifdef PROF
         clock_t stop_time = clock();
@@ -269,14 +255,14 @@ __global__ void bmv32_sparse_workloadsplit(const unsigned* __restrict__ A, const
 
 // workload split: (1) eliminate 0 workload, (2) split large workload
 // workload split, estimate size
-__global__ void count_workload_split(int* workloadsize, const int* rowptr, const int nblockrows, const int* colind, const int MIN)
+__global__ void count_workload_split(int* workloadsize, const int* rowptr, const int nblockrows, const int* colind, const int MAX)
 {
     int cnt = 0;
     for(int i=0; i<nblockrows; i++) {
         int load = rowptr[i+1]-rowptr[i];
         if (load == 0) continue;
-        if (load > MIN) { // split
-            int n = (int)ceilf((float)load / MIN);
+        if (load > MAX) { // split
+            int n = (int)ceilf((float)load / MAX);
             cnt += n;
         } else { // preserve
             cnt += 1;
@@ -285,23 +271,36 @@ __global__ void count_workload_split(int* workloadsize, const int* rowptr, const
     *workloadsize = cnt;
 }
 
-// workload split, all workload is under min
-__global__ void workload_split(int* workloadptr, const int* rowptr, const int nblockrows, const int* colind, const int MIN)
+// workload split, all workload is under MAX
+__global__ void workload_split(int* workloadptr, const int* rowptr, const int nblockrows, const int MAX)
 {
     int cnt = 0;
     for(int i=0; i<nblockrows; i++) {
         int load = rowptr[i+1]-rowptr[i];
-        if (load == 0) continue;
-        if (load > MIN) { // split
-            int n = (int)ceilf((float)load / MIN);
-            for(int j=0; j<n; j++) {
-                workloadptr[cnt++] = j == 0 ? i : -j;
+
+        if (load == 0) continue; // eliminate 0 workload
+        if (load > MAX) { // split
+            int n = load / MAX;
+            int j;
+            for(j=0; j<n; j++) {
+                workloadptr[cnt++] = i;// row
+                workloadptr[cnt++] = rowptr[i]+MAX*j; // rowstart
+                workloadptr[cnt++] = MAX; // load
+            }
+
+            // rest
+            if (load % MAX != 0) {
+                workloadptr[cnt++] = i;// row
+                workloadptr[cnt++] = rowptr[i]+MAX*j; // rowstart
+                workloadptr[cnt++] = load % MAX; // load
             }
         } else { // preserve
-            workloadptr[cnt++] = i;
+            workloadptr[cnt++] = i;// row
+            workloadptr[cnt++] = rowptr[i]; // rowstart
+            workloadptr[cnt++] = load; // load
         }
     }
-} // 1 2 3 4 -1 -2 6 7
+} // [row, rowstart, load]
 
 // workload merge: (1) eliminate 0 workload, (2) merge small workload
 // workload merge, estimate size
@@ -464,7 +463,7 @@ __global__ void bmv64_sparse_workloadmergeNsplit(const ullong* __restrict__ A, c
 
         // load location
         const ullong* Asub = &(A[row_start*64]);
-        T* Csub = &(C[(row+w)*64]);
+        T* Csub = &(C[(row+w)*64]); // <-- should not be continuous move, will fail at some case with 0 blockrows (e.g. citpat, indochina)
 
         // compute
         register unsigned Cm[1] = {0}; // allocate 1 register
