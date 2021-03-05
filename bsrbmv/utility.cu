@@ -366,27 +366,38 @@ __global__ void printTimeReport(const int *arr, const int N)
 
 }
 
-__global__ void printTimenLoadReport(const int *arr, const int *load, const int N)
+__global__ void printTimenLoadReport(const int *time, const int *load, const int N)
 {
-    float minv = (float)arr[0], maxv = (float)arr[0], sum = 0.0;
+    float minv = (float)time[0], maxv = (float)time[0], sum = 0.0;
     float minl = (float)load[0], maxl = (float)load[0], suml = 0.0;
     int maxvi = 0, maxli = 0;
 //    printf("======================\n");
     for (int i=0; i<N; i++) {
 //        printf("[%5d] %d %d\n", i, arr[i], load[i]);
-        sum += arr[i];
-        maxv = max(maxv, (float)arr[i]);
-        if (maxv == (float)arr[i]) maxvi = i;
-        minv = min(minv, (float)arr[i]);
+        sum += time[i];
+        maxv = max(maxv, (float)time[i]);
+        if (maxv == (float)time[i]) maxvi = i;
+        minv = min(minv, (float)time[i]);
 
         suml += load[i];
         maxl = max(maxl, (float)load[i]);
         if (maxl == (float)load[i]) maxli = i;
         minl = min(minl, (float)load[i]);
     }
+
+    float mean_t = sum/N, mean_l = suml/N;
+
+    float sd_t = 0.0, sd_l = 0.0;
+    for (int i=0; i<N; i++) {
+        sd_t += pow((time[i] - mean_t), 2);
+        sd_l += pow((load[i] - mean_l), 2);
+    }
+    sd_t = sqrt(sd_t / N);
+    sd_l = sqrt(sd_l / N);
+
     printf("======================\n");
-    printf("min_t: %d, max_t: %d, avg_t: %.2f\n", (int)minv, (int)maxv, sum/N);
-    printf("min_l: %d, max_l: %d, avg_l: %.2f\n", (int)minl, (int)maxl, suml/N);
+    printf("min_t: %d, max_t: %d, avg_t: %.2f, sd_t: %.2f\n", (int)minv, (int)maxv, mean_t, sd_t);
+    printf("min_l: %d, max_l: %d, avg_l: %.2f, sd_l: %.2f\n", (int)minl, (int)maxl, mean_l, sd_l);
     printf("max_t index: %d, max_l index: %d\n", maxvi, maxli);
     printf("======================\n");
 
