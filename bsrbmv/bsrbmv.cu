@@ -608,3 +608,56 @@ __global__ void getWorkloadInfo (const int* __restrict__ rowptr, const int nbloc
 
 }
 
+//======================================================================================
+// Considering Workload Balancing -- fixed implementation
+//======================================================================================
+// naive 32
+template <typename Index, typename T>
+__global__ void bmv32_sparse_opt(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                const Index* __restrict__ rowind, const Index* __restrict__ colind,
+                                const Index nblocks, const Index MAX, int* runtime, int* load)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+
+    if (bx < (int)ceil((float)nblocks/MAX)) {
+#ifdef PROF
+        clock_t start_time = clock();
+#endif
+
+    // load
+    GET_LANEID;
+
+    // compute // can parallel by max
+    int workload_end = bx*MAX+MAX < nblocks ? bx*MAX+MAX : nblocks;
+
+    #pragma unroll
+    for(int w=bx*MAX; w<workload_end; w++) {
+        // set pointer
+        int row = rowind[w];
+        int col = colind[w];
+
+        // compute
+        unsigned r0 = A[w*32+laneid];
+        unsigned r1 = B[col];
+
+        // store
+        atomicAdd(&C[row*32+laneid], (T)(__popc(r0 & r1)));
+    }
+
+#ifdef PROF
+        clock_t stop_time = clock();
+        runtime[bx] = (int)(stop_time - start_time);
+        load[bx] = workload_end-bx*MAX;
+#endif
+    }
+}
+
+// bsr to bcoo
+__global__ void bsr2bcoo(const int* rowptr, const int nblockrows, const int* colind, int* rowind) {
+
+    for(int i=0; i<nblockrows; i++) {
+        for(int j=rowptr[i]; j<rowptr[i+1]; j++) {
+            rowind[j] = i;
+        }
+    }
+}
