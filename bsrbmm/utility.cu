@@ -256,6 +256,51 @@ __global__ void printDeviceIndArr(const Index* indarr, const Index N)
     for(Index i=0; i<N; i++) printf("%d ", indarr[i]);
     printf("\n");
 }
+
+__global__ void printGlobalBSR8(const int* bsrrowptr, const int* bsrcolind, const uchar* bsrval,
+                               const int blocksize, const int nblockrows, const int nblocks)
+{
+    printf("--- global bsr 8 --- \n");
+    printf("bsrrowptr: \n"); for(int i=0; i<(nblockrows+1); i++) { printf("%d ", bsrrowptr[i]); } printf("\n");
+    printf("bsrcolind: \n"); for(int i=0; i<nblocks; i++) { printf("%d ", bsrcolind[i]); } printf("\n");
+    printf("bsrval: \n");
+    printf("[0] "); for(int j=0; j<blocksize; j++) { for(uchar i = 1 << 7; i > 0; i = i / 2)
+    { (bsrval[0*blocksize+j]&i)?printf("1"):printf("0"); } printf(" "); } printf("\n");
+    printf("[%d] ", nblocks-1); for(int j=0; j<blocksize; j++) { for(uchar i = 1 << 7; i > 0; i = i / 2)
+    { (bsrval[(nblocks-1)*blocksize+j]&i)?printf("1"):printf("0"); } printf(" "); } printf("\n");
+}
+
+__global__ void printGlobalBSRBlock8(const uchar* bsrval, const int blocksize, const int nblocks)
+{
+    printf("--- global bsr 8 block (bitmap) --- \n");
+    for(int b=0; b<nblocks; b++) {
+        printf("[%d]\n", b); for(int j=0; j<blocksize; j++) { for(uchar i = 1 << 7; i > 0; i = i / 2)
+        { (bsrval[b*blocksize+j]&i)?printf("1"):printf("0"); } printf("\n"); }
+    }
+}
+
+__global__ void printGlobalBSR16(const int* bsrrowptr, const int* bsrcolind, const ushort* bsrval,
+                               const int blocksize, const int nblockrows, const int nblocks)
+{
+    printf("--- global bsr 16 --- \n");
+    printf("bsrrowptr: \n"); for(int i=0; i<(nblockrows+1); i++) { printf("%d ", bsrrowptr[i]); } printf("\n");
+    printf("bsrcolind: \n"); for(int i=0; i<nblocks; i++) { printf("%d ", bsrcolind[i]); } printf("\n");
+    printf("bsrval: \n");
+    printf("[0] "); for(int j=0; j<blocksize; j++) { for(ushort i = 1 << 15; i > 0; i = i / 2)
+    { (bsrval[0*blocksize+j]&i)?printf("1"):printf("0"); } printf(" "); } printf("\n");
+    printf("[%d] ", nblocks-1); for(int j=0; j<blocksize; j++) { for(ushort i = 1 << 15; i > 0; i = i / 2)
+    { (bsrval[(nblocks-1)*blocksize+j]&i)?printf("1"):printf("0"); } printf(" "); } printf("\n");
+}
+
+__global__ void printGlobalBSRBlock16(const ushort* bsrval, const int blocksize, const int nblocks)
+{
+    printf("--- global bsr 16 block (bitmap) --- \n");
+    for(int b=0; b<nblocks; b++) {
+        printf("[%d]\n", b); for(int j=0; j<blocksize; j++) { for(ushort i = 1 << 15; i > 0; i = i / 2)
+        { (bsrval[b*blocksize+j]&i)?printf("1"):printf("0"); } printf("\n"); }
+    }
+}
+
 __global__ void printGlobalBSR32(const int* bsrrowptr, const int* bsrcolind, const unsigned* bsrval,
                                const int blocksize, const int nblockrows, const int nblocks)
 {

@@ -2,6 +2,654 @@
 #include "utility.cu"
 
 /**
+* batch the process of csr2bsr, blocksize = 8
+* assume csr val are only 0 or 1
+*/
+void csr2bsr_batch_8_row(const int* h_csrRowPtr, const int* h_csrColInd,
+                    const int nrows, const int ncols, const int nnz,
+                    int* bsrRowPtr, int* bsrColInd, uchar* bsrVal,
+                    const int blocksize, const int nblockrows, const int nblocks)
+{
+#ifdef DEBUG
+    // check h_csr
+    printf("h_csrRowPtr:\n"); printHostIndArr<int>(h_csrRowPtr, (nrows+1));
+    printf("h_csrColInd:\n"); printHostIndArr<int>(h_csrColInd, nnz);
+#endif
+
+    // global result
+    setDeviceIndArr<int><<<1,1>>>(bsrRowPtr, (nblockrows+1), 0);
+    setDeviceIndArr<int><<<1,1>>>(bsrColInd, nblocks, 0);
+    setDeviceValArr<int, uchar><<<1,1>>>(bsrVal, nblocks*blocksize, 0);
+    int total_nblocks = 0;
+
+    // buffer storage
+    int *temp_csrrowptr, *temp_csrcolind;
+    float *temp_csrval;
+    int *temp_bsrrowptr, *temp_bsrcolind;
+    float *temp_bsrval;
+    uchar *temp_bsrval_packed;
+
+    for(int i=0; i<nblockrows; i++) { // serial processing, 1 blockrow at a time
+
+        // calculate nnz in this blockrow
+        int temp_rowend = ((i+1)*8<nrows?h_csrRowPtr[(i+1)*8]:nnz), temp_rowstart = h_csrRowPtr[i*8];
+        int temp_nnz = temp_rowend - temp_rowstart;
+#ifdef DEBUG
+        printf("[blockrow %d] temp_nnz: %d, temp_rowstart: %d, temp_rowend: %d\n", i, temp_nnz, temp_rowstart, temp_rowend);
+#endif
+        if (temp_nnz != 0)
+        {
+            // set up cusparse metadata
+            // 1) create cusparsematdescr for csr, bsr
+            cusparseMatDescr_t csr_descr = 0;
+            CHECK_CUSPARSE( cusparseCreateMatDescr(&csr_descr) );
+            CHECK_CUSPARSE( cusparseSetMatType(csr_descr,CUSPARSE_MATRIX_TYPE_GENERAL) );
+            CHECK_CUSPARSE( cusparseSetMatIndexBase(csr_descr,CUSPARSE_INDEX_BASE_ZERO) );
+            cusparseMatDescr_t bsr_descr = 0;
+            CHECK_CUSPARSE( cusparseCreateMatDescr(&bsr_descr) );
+            CHECK_CUSPARSE( cusparseSetMatType(bsr_descr, CUSPARSE_MATRIX_TYPE_GENERAL) );
+            CHECK_CUSPARSE( cusparseSetMatIndexBase(bsr_descr, CUSPARSE_INDEX_BASE_ZERO) );
+
+            // 2) cusparse handle, stream
+            cudaStream_t streamId = 0;
+            cusparseHandle_t handle = 0;
+            CHECK_CUSPARSE( cusparseCreate(&handle) );
+            CHECK_CUSPARSE( cusparseSetStream(handle, streamId) );
+
+            // 3) cusparse direction
+            cusparseDirection_t dirA = CUSPARSE_DIRECTION_ROW;
+
+            /* **************************************** */
+            // set buffer csr storage
+            // 1) set buffer csr rowptr & offset
+            cudaMalloc((void**)&temp_csrrowptr, sizeof(int) * (8+1));
+            if (i == nblockrows-1) { // last iteration
+                cudaMemcpy(temp_csrrowptr, h_csrRowPtr+i*8, sizeof(int) * ((nrows+1)-(i*8)), cudaMemcpyHostToDevice);
+                offsetDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, ((nrows+1)-(i*8)), temp_rowstart); // offset rowptr
+                padDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, ((nrows+1)-(i*8)), (8+1), temp_nnz);
+            }
+            else { // all other iteration except last
+                cudaMemcpy(temp_csrrowptr, h_csrRowPtr+i*8, sizeof(int) * (8+1), cudaMemcpyHostToDevice);
+                offsetDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, (8+1), temp_rowstart); // offset rowptr
+            }
+#ifdef DEBUG
+             printf("temp_csrrowptr: \n"); printDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, (8+1));
+#endif
+
+            // 2) set buffer csr colind
+            cudaMalloc((void**)&temp_csrcolind, sizeof(int) * temp_nnz);
+            cudaMemcpy(temp_csrcolind, h_csrColInd+temp_rowstart, sizeof(int) * temp_nnz, cudaMemcpyHostToDevice);
+#ifdef DEBUG
+             printf("temp_csrcolind: \n"); printDeviceIndArr<int><<<1,1>>>(temp_csrcolind, temp_nnz);
+#endif
+
+            // 3) set buffer csr val
+            cudaMalloc((void**)&temp_csrval, sizeof(float) * temp_nnz);
+            setDeviceValArr<int, float><<<1,1>>>(temp_csrval, temp_nnz, 1.0);
+
+            // calculate nnzb & allocate buffer bsr storage
+            int temp_nblocks;
+            cudaMalloc((void**)&temp_bsrrowptr, sizeof(int) * 2);
+            CHECK_CUSPARSE( cusparseXcsr2bsrNnz(handle, dirA, blocksize, ncols, csr_descr,
+                                temp_csrrowptr, temp_csrcolind, blocksize, bsr_descr,
+                                temp_bsrrowptr, &temp_nblocks) );
+            cudaMalloc((void**)&temp_bsrcolind, sizeof(int) * temp_nblocks);
+            cudaMalloc((void**)&temp_bsrval, sizeof(float) * temp_nblocks * blocksize * blocksize);
+
+            // csr2bsr (nrows = blocksize, ncols = ncols)
+            CHECK_CUSPARSE( cusparseScsr2bsr(handle, dirA, blocksize, ncols, csr_descr,
+                            temp_csrval, temp_csrrowptr, temp_csrcolind,
+                            blocksize, bsr_descr, temp_bsrval, temp_bsrrowptr, temp_bsrcolind) );
+#ifdef VERBOSE
+            if (i % 1000 == 0)
+                printf("current total_nblocks: %d, temp_nblocks: %d\n", total_nblocks, temp_nblocks);
+#endif
+            total_nblocks += temp_nblocks;
+
+            // pack buffer bsrval to binary
+            cudaMalloc((void**)&temp_bsrval_packed, sizeof(uchar) * ceil((float)temp_nblocks/16) * 16 * blocksize);
+            ToBit8Col<float><<<dim3(1, ceil((float)temp_nblocks/16)), 32>>>(temp_bsrval, temp_bsrval_packed, temp_nblocks);
+
+            // concat to global bsr result
+            int last_bsrrowind;
+            cudaMemcpy(&last_bsrrowind, bsrRowPtr+i, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+            setDeviceIndArrElem<int><<<1,1>>>(bsrRowPtr, (i+1), last_bsrrowind+temp_nblocks); // add on offset
+#ifdef DEBUG
+            printf("set global bsrRowPtr[%d] = %d\n", (i+1), last_bsrrowind+temp_nblocks);
+#endif
+            cudaMemcpy(bsrColInd+last_bsrrowind, temp_bsrcolind, sizeof(int) * temp_nblocks, cudaMemcpyDeviceToDevice);
+            cudaMemcpy(bsrVal+last_bsrrowind*blocksize, temp_bsrval_packed, sizeof(uchar) * temp_nblocks * blocksize, cudaMemcpyDeviceToDevice);
+
+            // clean buffer
+            cudaFree(temp_csrrowptr); temp_csrrowptr = NULL;
+            cudaFree(temp_csrcolind); temp_csrcolind = NULL;
+            cudaFree(temp_csrval); temp_csrval = NULL;
+            cudaFree(temp_bsrrowptr); temp_bsrrowptr = NULL;
+            cudaFree(temp_bsrcolind); temp_bsrcolind = NULL;
+            cudaFree(temp_bsrval); temp_bsrval = NULL;
+            cudaFree(temp_bsrval_packed); temp_bsrval_packed = NULL;
+
+            // free descr and handle memory
+            CHECK_CUSPARSE( cusparseDestroyMatDescr(csr_descr) );
+            CHECK_CUSPARSE( cusparseDestroyMatDescr(bsr_descr) );
+            CHECK_CUSPARSE( cusparseDestroy(handle) );
+
+        } else { // only update global bsr's rowptr
+            int last_bsrrowind;
+            cudaMemcpy(&last_bsrrowind, bsrRowPtr+i, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+            setDeviceIndArrElem<int><<<1,1>>>(bsrRowPtr, (i+1), last_bsrrowind); // add on offset
+#ifdef DEBUG
+            printf("set global bsrRowPtr[%d] = %d\n", (i+1), last_bsrrowind);
+#endif
+
+        } // if (temp_nnz != 0)
+#ifdef DEBUG
+        // printout global bsr to verify
+        printGlobalBSR8<<<1,1>>>(bsrRowPtr, bsrColInd, bsrVal, blocksize, nblockrows, nblocks);
+        int k; std::cin >> k;
+#endif
+
+    } // for (i < nblockrows)
+
+    // final check
+#ifdef VERBOSE
+    if (total_nblocks != nblocks)
+        printf("[fail] total nblocks %d do not match nblocks %d!\n", total_nblocks, nblocks);
+    else printf("[success] total nblocks %d match nblocks %d!\n", total_nblocks, nblocks);
+#endif
+
+#ifdef DEBUG
+    printout global bsr to verify
+    printGlobalBSR8<<<1,1>>>(bsrRowPtr, bsrColInd, bsrVal, blocksize, nblockrows, nblocks);
+    printGlobalBSRBlock8<<<1,1>>>(bsrVal, blocksize, nblocks);
+#endif
+}
+
+void csr2bsr_batch_8_col(const int* h_csrRowPtr, const int* h_csrColInd,
+                    const int nrows, const int ncols, const int nnz,
+                    int* bsrRowPtr, int* bsrColInd, uchar* bsrVal,
+                    const int blocksize, const int nblockrows, const int nblocks)
+{
+#ifdef DEBUG
+    // check h_csr
+    printf("h_csrRowPtr:\n"); printHostIndArr<int>(h_csrRowPtr, (nrows+1));
+    printf("h_csrColInd:\n"); printHostIndArr<int>(h_csrColInd, nnz);
+#endif
+
+    // global result
+    setDeviceIndArr<int><<<1,1>>>(bsrRowPtr, (nblockrows+1), 0);
+    setDeviceIndArr<int><<<1,1>>>(bsrColInd, nblocks, 0);
+    setDeviceValArr<int, uchar><<<1,1>>>(bsrVal, nblocks*blocksize, 0);
+    int total_nblocks = 0;
+
+    // buffer storage
+    int *temp_csrrowptr, *temp_csrcolind;
+    float *temp_csrval;
+    int *temp_bsrrowptr, *temp_bsrcolind;
+    float *temp_bsrval;
+    uchar *temp_bsrval_packed;
+
+    for(int i=0; i<nblockrows; i++) { // serial processing, 1 blockrow at a time
+
+        // calculate nnz in this blockrow
+        int temp_rowend = ((i+1)*8<nrows?h_csrRowPtr[(i+1)*8]:nnz), temp_rowstart = h_csrRowPtr[i*8];
+        int temp_nnz = temp_rowend - temp_rowstart;
+#ifdef DEBUG
+        printf("[blockrow %d] temp_nnz: %d, temp_rowstart: %d, temp_rowend: %d\n", i, temp_nnz, temp_rowstart, temp_rowend);
+#endif
+        if (temp_nnz != 0)
+        {
+            // set up cusparse metadata
+            // 1) create cusparsematdescr for csr, bsr
+            cusparseMatDescr_t csr_descr = 0;
+            CHECK_CUSPARSE( cusparseCreateMatDescr(&csr_descr) );
+            CHECK_CUSPARSE( cusparseSetMatType(csr_descr,CUSPARSE_MATRIX_TYPE_GENERAL) );
+            CHECK_CUSPARSE( cusparseSetMatIndexBase(csr_descr,CUSPARSE_INDEX_BASE_ZERO) );
+            cusparseMatDescr_t bsr_descr = 0;
+            CHECK_CUSPARSE( cusparseCreateMatDescr(&bsr_descr) );
+            CHECK_CUSPARSE( cusparseSetMatType(bsr_descr, CUSPARSE_MATRIX_TYPE_GENERAL) );
+            CHECK_CUSPARSE( cusparseSetMatIndexBase(bsr_descr, CUSPARSE_INDEX_BASE_ZERO) );
+
+            // 2) cusparse handle, stream
+            cudaStream_t streamId = 0;
+            cusparseHandle_t handle = 0;
+            CHECK_CUSPARSE( cusparseCreate(&handle) );
+            CHECK_CUSPARSE( cusparseSetStream(handle, streamId) );
+
+            // 3) cusparse direction
+            cusparseDirection_t dirA = CUSPARSE_DIRECTION_COLUMN;
+
+            /* **************************************** */
+            // set buffer csr storage
+            // 1) set buffer csr rowptr & offset
+            cudaMalloc((void**)&temp_csrrowptr, sizeof(int) * (8+1));
+            if (i == nblockrows-1) { // last iteration
+                cudaMemcpy(temp_csrrowptr, h_csrRowPtr+i*8, sizeof(int) * ((nrows+1)-(i*8)), cudaMemcpyHostToDevice);
+                offsetDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, ((nrows+1)-(i*8)), temp_rowstart); // offset rowptr
+                padDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, ((nrows+1)-(i*8)), (8+1), temp_nnz);
+            }
+            else { // all other iteration except last
+                cudaMemcpy(temp_csrrowptr, h_csrRowPtr+i*8, sizeof(int) * (8+1), cudaMemcpyHostToDevice);
+                offsetDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, (8+1), temp_rowstart); // offset rowptr
+            }
+#ifdef DEBUG
+             printf("temp_csrrowptr: \n"); printDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, (8+1));
+#endif
+
+            // 2) set buffer csr colind
+            cudaMalloc((void**)&temp_csrcolind, sizeof(int) * temp_nnz);
+            cudaMemcpy(temp_csrcolind, h_csrColInd+temp_rowstart, sizeof(int) * temp_nnz, cudaMemcpyHostToDevice);
+#ifdef DEBUG
+             printf("temp_csrcolind: \n"); printDeviceIndArr<int><<<1,1>>>(temp_csrcolind, temp_nnz);
+#endif
+
+            // 3) set buffer csr val
+            cudaMalloc((void**)&temp_csrval, sizeof(float) * temp_nnz);
+            setDeviceValArr<int, float><<<1,1>>>(temp_csrval, temp_nnz, 1.0);
+
+            // calculate nnzb & allocate buffer bsr storage
+            int temp_nblocks;
+            cudaMalloc((void**)&temp_bsrrowptr, sizeof(int) * 2);
+            CHECK_CUSPARSE( cusparseXcsr2bsrNnz(handle, dirA, blocksize, ncols, csr_descr,
+                                temp_csrrowptr, temp_csrcolind, blocksize, bsr_descr,
+                                temp_bsrrowptr, &temp_nblocks) );
+            cudaMalloc((void**)&temp_bsrcolind, sizeof(int) * temp_nblocks);
+            cudaMalloc((void**)&temp_bsrval, sizeof(float) * temp_nblocks * blocksize * blocksize);
+
+            // csr2bsr (nrows = blocksize, ncols = ncols)
+            CHECK_CUSPARSE( cusparseScsr2bsr(handle, dirA, blocksize, ncols, csr_descr,
+                            temp_csrval, temp_csrrowptr, temp_csrcolind,
+                            blocksize, bsr_descr, temp_bsrval, temp_bsrrowptr, temp_bsrcolind) );
+#ifdef VERBOSE
+            if (i % 1000 == 0)
+                printf("current total_nblocks: %d, temp_nblocks: %d\n", total_nblocks, temp_nblocks);
+#endif
+            total_nblocks += temp_nblocks;
+
+            // pack buffer bsrval to binary
+            cudaMalloc((void**)&temp_bsrval_packed, sizeof(uchar) * ceil((float)temp_nblocks/16) * 16 * blocksize);
+            ToBit8Col<float><<<dim3(1, ceil((float)temp_nblocks/16)), 32>>>(temp_bsrval, temp_bsrval_packed, temp_nblocks);
+
+            // concat to global bsr result
+            int last_bsrrowind;
+            cudaMemcpy(&last_bsrrowind, bsrRowPtr+i, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+            setDeviceIndArrElem<int><<<1,1>>>(bsrRowPtr, (i+1), last_bsrrowind+temp_nblocks); // add on offset
+#ifdef DEBUG
+            printf("set global bsrRowPtr[%d] = %d\n", (i+1), last_bsrrowind+temp_nblocks);
+#endif
+            cudaMemcpy(bsrColInd+last_bsrrowind, temp_bsrcolind, sizeof(int) * temp_nblocks, cudaMemcpyDeviceToDevice);
+            cudaMemcpy(bsrVal+last_bsrrowind*blocksize, temp_bsrval_packed, sizeof(uchar) * temp_nblocks * blocksize, cudaMemcpyDeviceToDevice);
+
+            // clean buffer
+            cudaFree(temp_csrrowptr); temp_csrrowptr = NULL;
+            cudaFree(temp_csrcolind); temp_csrcolind = NULL;
+            cudaFree(temp_csrval); temp_csrval = NULL;
+            cudaFree(temp_bsrrowptr); temp_bsrrowptr = NULL;
+            cudaFree(temp_bsrcolind); temp_bsrcolind = NULL;
+            cudaFree(temp_bsrval); temp_bsrval = NULL;
+            cudaFree(temp_bsrval_packed); temp_bsrval_packed = NULL;
+
+            // free descr and handle memory
+            CHECK_CUSPARSE( cusparseDestroyMatDescr(csr_descr) );
+            CHECK_CUSPARSE( cusparseDestroyMatDescr(bsr_descr) );
+            CHECK_CUSPARSE( cusparseDestroy(handle) );
+
+        } else { // only update global bsr's rowptr
+            int last_bsrrowind;
+            cudaMemcpy(&last_bsrrowind, bsrRowPtr+i, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+            setDeviceIndArrElem<int><<<1,1>>>(bsrRowPtr, (i+1), last_bsrrowind); // add on offset
+#ifdef DEBUG
+            printf("set global bsrRowPtr[%d] = %d\n", (i+1), last_bsrrowind);
+#endif
+
+        } // if (temp_nnz != 0)
+#ifdef DEBUG
+        // printout global bsr to verify
+        printGlobalBSR8<<<1,1>>>(bsrRowPtr, bsrColInd, bsrVal, blocksize, nblockrows, nblocks);
+        int k; std::cin >> k;
+#endif
+
+    } // for (i < nblockrows)
+
+    // final check
+#ifdef VERBOSE
+    if (total_nblocks != nblocks)
+        printf("[fail] total nblocks %d do not match nblocks %d!\n", total_nblocks, nblocks);
+    else printf("[success] total nblocks %d match nblocks %d!\n", total_nblocks, nblocks);
+#endif
+
+#ifdef DEBUG
+    printout global bsr to verify
+    printGlobalBSR8<<<1,1>>>(bsrRowPtr, bsrColInd, bsrVal, blocksize, nblockrows, nblocks);
+    printGlobalBSRBlock8<<<1,1>>>(bsrVal, blocksize, nblocks);
+#endif
+}
+
+/**
+* batch the process of csr2bsr, blocksize = 16
+* assume csr val are only 0 or 1
+*/
+void csr2bsr_batch_16_row(const int* h_csrRowPtr, const int* h_csrColInd,
+                    const int nrows, const int ncols, const int nnz,
+                    int* bsrRowPtr, int* bsrColInd, ushort* bsrVal,
+                    const int blocksize, const int nblockrows, const int nblocks)
+{
+#ifdef DEBUG
+    // check h_csr
+    printf("h_csrRowPtr:\n"); printHostIndArr<int>(h_csrRowPtr, (nrows+1));
+    printf("h_csrColInd:\n"); printHostIndArr<int>(h_csrColInd, nnz);
+#endif
+
+    // global result
+    setDeviceIndArr<int><<<1,1>>>(bsrRowPtr, (nblockrows+1), 0);
+    setDeviceIndArr<int><<<1,1>>>(bsrColInd, nblocks, 0);
+    setDeviceValArr<int, ushort><<<1,1>>>(bsrVal, nblocks*blocksize, 0);
+    int total_nblocks = 0;
+
+    // buffer storage
+    int *temp_csrrowptr, *temp_csrcolind;
+    float *temp_csrval;
+    int *temp_bsrrowptr, *temp_bsrcolind;
+    float *temp_bsrval;
+    ushort *temp_bsrval_packed;
+
+    for(int i=0; i<nblockrows; i++) { // serial processing, 1 blockrow at a time
+
+        // calculate nnz in this blockrow
+        int temp_rowend = ((i+1)*16<nrows?h_csrRowPtr[(i+1)*16]:nnz), temp_rowstart = h_csrRowPtr[i*16];
+        int temp_nnz = temp_rowend - temp_rowstart;
+#ifdef DEBUG
+        printf("[blockrow %d] temp_nnz: %d, temp_rowstart: %d, temp_rowend: %d\n", i, temp_nnz, temp_rowstart, temp_rowend);
+#endif
+        if (temp_nnz != 0)
+        {
+            // set up cusparse metadata
+            // 1) create cusparsematdescr for csr, bsr
+            cusparseMatDescr_t csr_descr = 0;
+            CHECK_CUSPARSE( cusparseCreateMatDescr(&csr_descr) );
+            CHECK_CUSPARSE( cusparseSetMatType(csr_descr,CUSPARSE_MATRIX_TYPE_GENERAL) );
+            CHECK_CUSPARSE( cusparseSetMatIndexBase(csr_descr,CUSPARSE_INDEX_BASE_ZERO) );
+            cusparseMatDescr_t bsr_descr = 0;
+            CHECK_CUSPARSE( cusparseCreateMatDescr(&bsr_descr) );
+            CHECK_CUSPARSE( cusparseSetMatType(bsr_descr, CUSPARSE_MATRIX_TYPE_GENERAL) );
+            CHECK_CUSPARSE( cusparseSetMatIndexBase(bsr_descr, CUSPARSE_INDEX_BASE_ZERO) );
+
+            // 2) cusparse handle, stream
+            cudaStream_t streamId = 0;
+            cusparseHandle_t handle = 0;
+            CHECK_CUSPARSE( cusparseCreate(&handle) );
+            CHECK_CUSPARSE( cusparseSetStream(handle, streamId) );
+
+            // 3) cusparse direction
+            cusparseDirection_t dirA = CUSPARSE_DIRECTION_ROW;
+
+            /* **************************************** */
+            // set buffer csr storage
+            // 1) set buffer csr rowptr & offset
+            cudaMalloc((void**)&temp_csrrowptr, sizeof(int) * (16+1));
+            if (i == nblockrows-1) { // last iteration
+                cudaMemcpy(temp_csrrowptr, h_csrRowPtr+i*16, sizeof(int) * ((nrows+1)-(i*16)), cudaMemcpyHostToDevice);
+                offsetDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, ((nrows+1)-(i*16)), temp_rowstart); // offset rowptr
+                padDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, ((nrows+1)-(i*16)), (16+1), temp_nnz);
+            }
+            else { // all other iteration except last
+                cudaMemcpy(temp_csrrowptr, h_csrRowPtr+i*16, sizeof(int) * (16+1), cudaMemcpyHostToDevice);
+                offsetDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, (16+1), temp_rowstart); // offset rowptr
+            }
+#ifdef DEBUG
+             printf("temp_csrrowptr: \n"); printDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, (16+1));
+#endif
+
+            // 2) set buffer csr colind
+            cudaMalloc((void**)&temp_csrcolind, sizeof(int) * temp_nnz);
+            cudaMemcpy(temp_csrcolind, h_csrColInd+temp_rowstart, sizeof(int) * temp_nnz, cudaMemcpyHostToDevice);
+#ifdef DEBUG
+             printf("temp_csrcolind: \n"); printDeviceIndArr<int><<<1,1>>>(temp_csrcolind, temp_nnz);
+#endif
+
+            // 3) set buffer csr val
+            cudaMalloc((void**)&temp_csrval, sizeof(float) * temp_nnz);
+            setDeviceValArr<int, float><<<1,1>>>(temp_csrval, temp_nnz, 1.0);
+
+            // calculate nnzb & allocate buffer bsr storage
+            int temp_nblocks;
+            cudaMalloc((void**)&temp_bsrrowptr, sizeof(int) * 2);
+            CHECK_CUSPARSE( cusparseXcsr2bsrNnz(handle, dirA, blocksize, ncols, csr_descr,
+                                temp_csrrowptr, temp_csrcolind, blocksize, bsr_descr,
+                                temp_bsrrowptr, &temp_nblocks) );
+            cudaMalloc((void**)&temp_bsrcolind, sizeof(int) * temp_nblocks);
+            cudaMalloc((void**)&temp_bsrval, sizeof(float) * temp_nblocks * blocksize * blocksize);
+
+            // csr2bsr (nrows = blocksize, ncols = ncols)
+            CHECK_CUSPARSE( cusparseScsr2bsr(handle, dirA, blocksize, ncols, csr_descr,
+                            temp_csrval, temp_csrrowptr, temp_csrcolind,
+                            blocksize, bsr_descr, temp_bsrval, temp_bsrrowptr, temp_bsrcolind) );
+#ifdef VERBOSE
+            if (i % 1000 == 0)
+                printf("current total_nblocks: %d, temp_nblocks: %d\n", total_nblocks, temp_nblocks);
+#endif
+            total_nblocks += temp_nblocks;
+
+            // pack buffer bsrval to binary
+            cudaMalloc((void**)&temp_bsrval_packed, sizeof(ushort) * ceil((float)temp_nblocks/4) * 4 * blocksize);
+            ToBit16Col<float><<<dim3(1, ceil((float)temp_nblocks/4)), 32>>>(temp_bsrval, temp_bsrval_packed, temp_nblocks);
+
+            // concat to global bsr result
+            int last_bsrrowind;
+            cudaMemcpy(&last_bsrrowind, bsrRowPtr+i, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+            setDeviceIndArrElem<int><<<1,1>>>(bsrRowPtr, (i+1), last_bsrrowind+temp_nblocks); // add on offset
+#ifdef DEBUG
+            printf("set global bsrRowPtr[%d] = %d\n", (i+1), last_bsrrowind+temp_nblocks);
+#endif
+            cudaMemcpy(bsrColInd+last_bsrrowind, temp_bsrcolind, sizeof(int) * temp_nblocks, cudaMemcpyDeviceToDevice);
+            cudaMemcpy(bsrVal+last_bsrrowind*blocksize, temp_bsrval_packed, sizeof(ushort) * temp_nblocks * blocksize, cudaMemcpyDeviceToDevice);
+
+            // clean buffer
+            cudaFree(temp_csrrowptr); temp_csrrowptr = NULL;
+            cudaFree(temp_csrcolind); temp_csrcolind = NULL;
+            cudaFree(temp_csrval); temp_csrval = NULL;
+            cudaFree(temp_bsrrowptr); temp_bsrrowptr = NULL;
+            cudaFree(temp_bsrcolind); temp_bsrcolind = NULL;
+            cudaFree(temp_bsrval); temp_bsrval = NULL;
+            cudaFree(temp_bsrval_packed); temp_bsrval_packed = NULL;
+
+            // free descr and handle memory
+            CHECK_CUSPARSE( cusparseDestroyMatDescr(csr_descr) );
+            CHECK_CUSPARSE( cusparseDestroyMatDescr(bsr_descr) );
+            CHECK_CUSPARSE( cusparseDestroy(handle) );
+
+        } else { // only update global bsr's rowptr
+            int last_bsrrowind;
+            cudaMemcpy(&last_bsrrowind, bsrRowPtr+i, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+            setDeviceIndArrElem<int><<<1,1>>>(bsrRowPtr, (i+1), last_bsrrowind); // add on offset
+#ifdef DEBUG
+            printf("set global bsrRowPtr[%d] = %d\n", (i+1), last_bsrrowind);
+#endif
+
+        } // if (temp_nnz != 0)
+#ifdef DEBUG
+        // printout global bsr to verify
+        printGlobalBSR16<<<1,1>>>(bsrRowPtr, bsrColInd, bsrVal, blocksize, nblockrows, nblocks);
+        int k; std::cin >> k;
+#endif
+
+    } // for (i < nblockrows)
+
+    // final check
+#ifdef VERBOSE
+    if (total_nblocks != nblocks)
+        printf("[fail] total nblocks %d do not match nblocks %d!\n", total_nblocks, nblocks);
+    else printf("[success] total nblocks %d match nblocks %d!\n", total_nblocks, nblocks);
+#endif
+
+#ifdef DEBUG
+    printout global bsr to verify
+    printGlobalBSR16<<<1,1>>>(bsrRowPtr, bsrColInd, bsrVal, blocksize, nblockrows, nblocks);
+    printGlobalBSRBlock16<<<1,1>>>(bsrVal, blocksize, nblocks);
+#endif
+}
+
+void csr2bsr_batch_16_col(const int* h_csrRowPtr, const int* h_csrColInd,
+                    const int nrows, const int ncols, const int nnz,
+                    int* bsrRowPtr, int* bsrColInd, ushort* bsrVal,
+                    const int blocksize, const int nblockrows, const int nblocks)
+{
+#ifdef DEBUG
+    // check h_csr
+    printf("h_csrRowPtr:\n"); printHostIndArr<int>(h_csrRowPtr, (nrows+1));
+    printf("h_csrColInd:\n"); printHostIndArr<int>(h_csrColInd, nnz);
+#endif
+
+    // global result
+    setDeviceIndArr<int><<<1,1>>>(bsrRowPtr, (nblockrows+1), 0);
+    setDeviceIndArr<int><<<1,1>>>(bsrColInd, nblocks, 0);
+    setDeviceValArr<int, ushort><<<1,1>>>(bsrVal, nblocks*blocksize, 0);
+    int total_nblocks = 0;
+
+    // buffer storage
+    int *temp_csrrowptr, *temp_csrcolind;
+    float *temp_csrval;
+    int *temp_bsrrowptr, *temp_bsrcolind;
+    float *temp_bsrval;
+    ushort *temp_bsrval_packed;
+
+    for(int i=0; i<nblockrows; i++) { // serial processing, 1 blockrow at a time
+
+        // calculate nnz in this blockrow
+        int temp_rowend = ((i+1)*16<nrows?h_csrRowPtr[(i+1)*16]:nnz), temp_rowstart = h_csrRowPtr[i*16];
+        int temp_nnz = temp_rowend - temp_rowstart;
+#ifdef DEBUG
+        printf("[blockrow %d] temp_nnz: %d, temp_rowstart: %d, temp_rowend: %d\n", i, temp_nnz, temp_rowstart, temp_rowend);
+#endif
+        if (temp_nnz != 0)
+        {
+            // set up cusparse metadata
+            // 1) create cusparsematdescr for csr, bsr
+            cusparseMatDescr_t csr_descr = 0;
+            CHECK_CUSPARSE( cusparseCreateMatDescr(&csr_descr) );
+            CHECK_CUSPARSE( cusparseSetMatType(csr_descr,CUSPARSE_MATRIX_TYPE_GENERAL) );
+            CHECK_CUSPARSE( cusparseSetMatIndexBase(csr_descr,CUSPARSE_INDEX_BASE_ZERO) );
+            cusparseMatDescr_t bsr_descr = 0;
+            CHECK_CUSPARSE( cusparseCreateMatDescr(&bsr_descr) );
+            CHECK_CUSPARSE( cusparseSetMatType(bsr_descr, CUSPARSE_MATRIX_TYPE_GENERAL) );
+            CHECK_CUSPARSE( cusparseSetMatIndexBase(bsr_descr, CUSPARSE_INDEX_BASE_ZERO) );
+
+            // 2) cusparse handle, stream
+            cudaStream_t streamId = 0;
+            cusparseHandle_t handle = 0;
+            CHECK_CUSPARSE( cusparseCreate(&handle) );
+            CHECK_CUSPARSE( cusparseSetStream(handle, streamId) );
+
+            // 3) cusparse direction
+            cusparseDirection_t dirA = CUSPARSE_DIRECTION_COLUMN;
+
+            /* **************************************** */
+            // set buffer csr storage
+            // 1) set buffer csr rowptr & offset
+            cudaMalloc((void**)&temp_csrrowptr, sizeof(int) * (16+1));
+            if (i == nblockrows-1) { // last iteration
+                cudaMemcpy(temp_csrrowptr, h_csrRowPtr+i*16, sizeof(int) * ((nrows+1)-(i*16)), cudaMemcpyHostToDevice);
+                offsetDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, ((nrows+1)-(i*16)), temp_rowstart); // offset rowptr
+                padDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, ((nrows+1)-(i*16)), (16+1), temp_nnz);
+            }
+            else { // all other iteration except last
+                cudaMemcpy(temp_csrrowptr, h_csrRowPtr+i*16, sizeof(int) * (16+1), cudaMemcpyHostToDevice);
+                offsetDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, (16+1), temp_rowstart); // offset rowptr
+            }
+#ifdef DEBUG
+             printf("temp_csrrowptr: \n"); printDeviceIndArr<int><<<1,1>>>(temp_csrrowptr, (16+1));
+#endif
+
+            // 2) set buffer csr colind
+            cudaMalloc((void**)&temp_csrcolind, sizeof(int) * temp_nnz);
+            cudaMemcpy(temp_csrcolind, h_csrColInd+temp_rowstart, sizeof(int) * temp_nnz, cudaMemcpyHostToDevice);
+#ifdef DEBUG
+             printf("temp_csrcolind: \n"); printDeviceIndArr<int><<<1,1>>>(temp_csrcolind, temp_nnz);
+#endif
+
+            // 3) set buffer csr val
+            cudaMalloc((void**)&temp_csrval, sizeof(float) * temp_nnz);
+            setDeviceValArr<int, float><<<1,1>>>(temp_csrval, temp_nnz, 1.0);
+
+            // calculate nnzb & allocate buffer bsr storage
+            int temp_nblocks;
+            cudaMalloc((void**)&temp_bsrrowptr, sizeof(int) * 2);
+            CHECK_CUSPARSE( cusparseXcsr2bsrNnz(handle, dirA, blocksize, ncols, csr_descr,
+                                temp_csrrowptr, temp_csrcolind, blocksize, bsr_descr,
+                                temp_bsrrowptr, &temp_nblocks) );
+            cudaMalloc((void**)&temp_bsrcolind, sizeof(int) * temp_nblocks);
+            cudaMalloc((void**)&temp_bsrval, sizeof(float) * temp_nblocks * blocksize * blocksize);
+
+            // csr2bsr (nrows = blocksize, ncols = ncols)
+            CHECK_CUSPARSE( cusparseScsr2bsr(handle, dirA, blocksize, ncols, csr_descr,
+                            temp_csrval, temp_csrrowptr, temp_csrcolind,
+                            blocksize, bsr_descr, temp_bsrval, temp_bsrrowptr, temp_bsrcolind) );
+#ifdef VERBOSE
+            if (i % 1000 == 0)
+                printf("current total_nblocks: %d, temp_nblocks: %d\n", total_nblocks, temp_nblocks);
+#endif
+            total_nblocks += temp_nblocks;
+
+            // pack buffer bsrval to binary
+            cudaMalloc((void**)&temp_bsrval_packed, sizeof(ushort) * ceil((float)temp_nblocks/4) * 4 * blocksize);
+            ToBit16Col<float><<<dim3(1, ceil((float)temp_nblocks/4)), 32>>>(temp_bsrval, temp_bsrval_packed, temp_nblocks);
+
+            // concat to global bsr result
+            int last_bsrrowind;
+            cudaMemcpy(&last_bsrrowind, bsrRowPtr+i, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+            setDeviceIndArrElem<int><<<1,1>>>(bsrRowPtr, (i+1), last_bsrrowind+temp_nblocks); // add on offset
+#ifdef DEBUG
+            printf("set global bsrRowPtr[%d] = %d\n", (i+1), last_bsrrowind+temp_nblocks);
+#endif
+            cudaMemcpy(bsrColInd+last_bsrrowind, temp_bsrcolind, sizeof(int) * temp_nblocks, cudaMemcpyDeviceToDevice);
+            cudaMemcpy(bsrVal+last_bsrrowind*blocksize, temp_bsrval_packed, sizeof(ushort) * temp_nblocks * blocksize, cudaMemcpyDeviceToDevice);
+
+            // clean buffer
+            cudaFree(temp_csrrowptr); temp_csrrowptr = NULL;
+            cudaFree(temp_csrcolind); temp_csrcolind = NULL;
+            cudaFree(temp_csrval); temp_csrval = NULL;
+            cudaFree(temp_bsrrowptr); temp_bsrrowptr = NULL;
+            cudaFree(temp_bsrcolind); temp_bsrcolind = NULL;
+            cudaFree(temp_bsrval); temp_bsrval = NULL;
+            cudaFree(temp_bsrval_packed); temp_bsrval_packed = NULL;
+
+            // free descr and handle memory
+            CHECK_CUSPARSE( cusparseDestroyMatDescr(csr_descr) );
+            CHECK_CUSPARSE( cusparseDestroyMatDescr(bsr_descr) );
+            CHECK_CUSPARSE( cusparseDestroy(handle) );
+
+        } else { // only update global bsr's rowptr
+            int last_bsrrowind;
+            cudaMemcpy(&last_bsrrowind, bsrRowPtr+i, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+            setDeviceIndArrElem<int><<<1,1>>>(bsrRowPtr, (i+1), last_bsrrowind); // add on offset
+#ifdef DEBUG
+            printf("set global bsrRowPtr[%d] = %d\n", (i+1), last_bsrrowind);
+#endif
+
+        } // if (temp_nnz != 0)
+#ifdef DEBUG
+        // printout global bsr to verify
+        printGlobalBSR16<<<1,1>>>(bsrRowPtr, bsrColInd, bsrVal, blocksize, nblockrows, nblocks);
+        int k; std::cin >> k;
+#endif
+
+    } // for (i < nblockrows)
+
+    // final check
+#ifdef VERBOSE
+    if (total_nblocks != nblocks)
+        printf("[fail] total nblocks %d do not match nblocks %d!\n", total_nblocks, nblocks);
+    else printf("[success] total nblocks %d match nblocks %d!\n", total_nblocks, nblocks);
+#endif
+
+#ifdef DEBUG
+//    printout global bsr to verify
+    printGlobalBSR16<<<1,1>>>(bsrRowPtr, bsrColInd, bsrVal, blocksize, nblockrows, nblocks);
+    printGlobalBSRBlock16<<<1,1>>>(bsrVal, blocksize, nblocks);
+#endif
+}
+
+/**
 * batch the process of csr2bsr, blocksize = 32
 * assume csr val are only 0 or 1
 */
@@ -100,8 +748,10 @@ void csr2bsr_batch_32_row(const int* h_csrRowPtr, const int* h_csrColInd,
             CHECK_CUSPARSE( cusparseScsr2bsr(handle, dirA, blocksize, ncols, csr_descr,
                             temp_csrval, temp_csrrowptr, temp_csrcolind,
                             blocksize, bsr_descr, temp_bsrval, temp_bsrrowptr, temp_bsrcolind) );
+#ifdef VERBOSE
             if (i % 1000 == 0)
                 printf("current total_nblocks: %d, temp_nblocks: %d\n", total_nblocks, temp_nblocks);
+#endif
             total_nblocks += temp_nblocks;
 
             // pack buffer bsrval to binary
@@ -151,12 +801,14 @@ void csr2bsr_batch_32_row(const int* h_csrRowPtr, const int* h_csrColInd,
     } // for (i < nblockrows)
 
     // final check
+#ifdef VERBOSE
     if (total_nblocks != nblocks)
         printf("[fail] total nblocks %d do not match nblocks %d!\n", total_nblocks, nblocks);
     else printf("[success] total nblocks %d match nblocks %d!\n", total_nblocks, nblocks);
+#endif
 
 #ifdef DEBUG
-    printout global bsr to verify
+//    printout global bsr to verify
     printGlobalBSR32<<<1,1>>>(bsrRowPtr, bsrColInd, bsrVal, blocksize, nblockrows, nblocks);
     printGlobalBSRBlock32<<<1,1>>>(bsrVal, blocksize, nblocks);
 #endif
@@ -257,8 +909,10 @@ void csr2bsr_batch_32_col(const int* h_csrRowPtr, const int* h_csrColInd,
             CHECK_CUSPARSE( cusparseScsr2bsr(handle, dirA, blocksize, ncols, csr_descr,
                             temp_csrval, temp_csrrowptr, temp_csrcolind,
                             blocksize, bsr_descr, temp_bsrval, temp_bsrrowptr, temp_bsrcolind) );
+#ifdef VERBOSE
             if (i % 1000 == 0)
                 printf("current total_nblocks: %d, temp_nblocks: %d\n", total_nblocks, temp_nblocks);
+#endif
             total_nblocks += temp_nblocks;
 
             // pack buffer bsrval to binary
@@ -308,12 +962,14 @@ void csr2bsr_batch_32_col(const int* h_csrRowPtr, const int* h_csrColInd,
     } // for (i < nblockrows)
 
     // final check
+#ifdef VERBOSE
     if (total_nblocks != nblocks)
         printf("[fail] total nblocks %d do not match nblocks %d!\n", total_nblocks, nblocks);
     else printf("[success] total nblocks %d match nblocks %d!\n", total_nblocks, nblocks);
+#endif
 
 #ifdef DEBUG
-    printout global bsr to verify
+//    printout global bsr to verify
     printGlobalBSR32<<<1,1>>>(bsrRowPtr, bsrColInd, bsrVal, blocksize, nblockrows, nblocks);
     printGlobalBSRBlock32<<<1,1>>>(bsrVal, blocksize, nblocks);
 #endif
@@ -416,8 +1072,10 @@ void csr2bsr_batch_64_row(const int* h_csrRowPtr, const int* h_csrColInd,
             CHECK_CUSPARSE( cusparseScsr2bsr(handle, dirA, blocksize, ncols, csr_descr,
                             temp_csrval, temp_csrrowptr, temp_csrcolind,
                             blocksize, bsr_descr, temp_bsrval, temp_bsrrowptr, temp_bsrcolind) );
+#ifdef VERBOSE
             if (i % 1000 == 0)
                 printf("current total_nblocks: %d, temp_nblocks: %d\n", total_nblocks, temp_nblocks);
+#endif
             total_nblocks += temp_nblocks;
 
             // pack buffer bsrval to binary
@@ -470,9 +1128,11 @@ void csr2bsr_batch_64_row(const int* h_csrRowPtr, const int* h_csrColInd,
     } // for (i < nblockrows)
 
     // final check
+#ifdef VERBOSE
     if (total_nblocks != nblocks)
         printf("[fail] total nblocks %d do not match nblocks %d!\n", total_nblocks, nblocks);
     else printf("[success] total nblocks %d match nblocks %d!\n", total_nblocks, nblocks);
+#endif
 
 #ifdef DEBUG
     // printout global bsr to verify
@@ -575,8 +1235,10 @@ void csr2bsr_batch_64_col(const int* h_csrRowPtr, const int* h_csrColInd,
             CHECK_CUSPARSE( cusparseScsr2bsr(handle, dirA, blocksize, ncols, csr_descr,
                             temp_csrval, temp_csrrowptr, temp_csrcolind,
                             blocksize, bsr_descr, temp_bsrval, temp_bsrrowptr, temp_bsrcolind) );
+#ifdef VERBOSE
             if (i % 1000 == 0)
                 printf("current total_nblocks: %d, temp_nblocks: %d\n", total_nblocks, temp_nblocks);
+#endif
             total_nblocks += temp_nblocks;
 
             // pack buffer bsrval to binary
@@ -629,9 +1291,11 @@ void csr2bsr_batch_64_col(const int* h_csrRowPtr, const int* h_csrColInd,
     } // for (i < nblockrows)
 
     // final check
+#ifdef VERBOSE
     if (total_nblocks != nblocks)
         printf("[fail] total nblocks %d do not match nblocks %d!\n", total_nblocks, nblocks);
     else printf("[success] total nblocks %d match nblocks %d!\n", total_nblocks, nblocks);
+#endif
 
 #ifdef DEBUG
     // printout global bsr to verify
