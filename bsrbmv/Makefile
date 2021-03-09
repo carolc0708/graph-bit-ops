@@ -3,17 +3,15 @@ CC = nvcc
 FLAGS = -arch=sm_60 -O3 -std=c++11 -w # -Xptxas --maxrregcount=96
 LINK = -lcublas -lcusparse -lcudart
 
-# all: bsrbmv32 bsrbmv64 bsrbmv32prof bsrbmv64prof
-
-# all: bsrbmv32ws bsrbmv64ws bsrbmv32wsprof bsrbmv64wsprof bsrbmv32 bsrbmv64 bsrbmv32prof bsrbmv64prof
-
-all: bsrbmv32split
+all: bsrbmv8 bsrbmv16 bsrbmv32 bsrbmv64
 
 # default
-bsrbmv: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
-	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -o $@
+bsrbmv8: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=8 -o $@
 
-# default: use gpu timer
+bsrbmv16: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=16 -o $@
+
 bsrbmv32: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=32 -o $@
 
@@ -27,18 +25,22 @@ bsrbmv32prof: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 bsrbmv64prof: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -DPROF -o $@
 
-# workload split only
+# workload-1 (splitonly)
 bsrbmv32split: workload-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) workload-bsrbmv.cu -DBLOCKSIZE=32 -DSPLIT -o $@
 
-# workload splitnmerge
+# workload-3 (bcoo)
+bsrbmv32bcoo: workload-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) opt-bsrbmv.cu -DBLOCKSIZE=32 -o $@
+
+# workload-2 (split & merge)
 bsrbmv32ws: workload-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) workload-bsrbmv.cu -DBLOCKSIZE=32 -o $@
 
 bsrbmv64ws: workload-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) workload-bsrbmv.cu -DBLOCKSIZE=64 -o $@
 
-# workload splitnmerge, prof each thread block
+# workload-2 (split & merge), prof each thread block
 bsrbmv32wsprof: workload-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) workload-bsrbmv.cu -DBLOCKSIZE=32 -DPROF -o $@
 
@@ -63,5 +65,4 @@ bsrbmv64debug: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -DDEBUG -o $@
 
 clean:
-	rm -f bsrbmv bsrbmv32 bsrbmv64 bsrbmv32prof bsrbmv64prof bsrbmv32ws bsrbmv32split \
-	    bsrbmv64ws bsrbmv32wsprof bsrbmv64wsprof *.o
+	rm -f bsrbmv8 bsrbmv16 bsrbmv32 bsrbmv64 *.o

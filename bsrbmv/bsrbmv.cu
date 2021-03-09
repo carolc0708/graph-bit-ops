@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include <assert.h>
 
-typedef unsigned long long ullong;
+typedef unsigned char uchar; // 8
+typedef unsigned short ushort; // 16
+typedef unsigned long long ullong; // 64
 
 // A faster way to obtain lane id in a warp
 #define GET_LANEID unsigned laneid; asm("mov.u32 %0, %%laneid;":"=r"(laneid));
@@ -18,6 +20,94 @@ template <typename T>
 __device__ __inline__ void store128(const void* addr, T a, T b, T c, T d)
 {
     *((float4*)addr) = make_float4(*(float*)(&a),*(float*)(&b),*(float*)(&c),*(float*)(&d));
+}
+
+// col-major packing bit 8
+// process 4 8x8x4 at the same time
+template <typename T>
+__global__ void ToBit8Col(const T* __restrict__ A, uchar* B, const int nblocks)
+{
+    GET_LANEID;
+    const unsigned by = blockIdx.y; // ceil(nblocks/16)
+    const unsigned bx = blockIdx.x; // 1
+    unsigned Bval;
+#pragma unroll
+    for (int i=0; i<32; i++)
+    {
+        T f0 = by*8*8*4*4+i*32+laneid < nblocks*8*8 ? A[by*8*8*4*4+i*32+laneid] : 0; // <-- laneid will get consecutive 32 (half-block)
+        unsigned r0 = __brev(__ballot(f0>0));
+
+        if (laneid == i) Bval = r0;
+    }
+
+    B[by*8*4*4+(laneid/2)*8+laneid%2*4] = (Bval & 0xFF000000) >> 24;
+    B[by*8*4*4+(laneid/2)*8+laneid%2*4+1] = (Bval & 0x00FF0000) >> 16;
+    B[by*8*4*4+(laneid/2)*8+laneid%2*4+2] = (Bval & 0x0000FF00) >> 8;
+    B[by*8*4*4+(laneid/2)*8+laneid%2*4+3] = Bval & 0x000000FF;
+}
+
+// row-major packing bit 8
+template <typename T>
+__global__ void ToBit8Row(const T* __restrict__ A, uchar* B, const int nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+
+    if (bx < (int)ceil((float)nblockrows/4)) {
+        unsigned Bval=0;
+
+        #pragma unroll
+        for (int i=0; i<32; i++)
+        {
+            T f0 = A[bx*8*4+i];
+            Bval = (Bval<<1) + (f0>0);
+        }
+        B[bx*4] = (Bval & 0xFF000000) >> 24;
+        B[bx*4+1] = (Bval & 0x00FF0000) >> 16;
+        B[bx*4+2] = (Bval & 0x0000FF00) >> 8;
+        B[bx*4+3] = Bval & 0x000000FF;
+    }
+}
+
+// col-major packing bit 16
+template <typename T>
+__global__ void ToBit16Col(const T* __restrict__ A, ushort* B, const int nblocks)
+{
+    GET_LANEID;
+    const unsigned by = blockIdx.y; // ceil(nblocks/4)
+    const unsigned bx = blockIdx.x; // 1
+    unsigned Bval;
+#pragma unroll
+    for (int i=0; i<32; i++)
+    {
+        T f0 = by*16*16*4+i*16*2+laneid < nblocks*16*16 ? A[by*16*16*4+i*16*2+laneid] : 0;
+        unsigned r0 = __brev(__ballot(f0>0));
+
+        if (laneid == i) Bval = r0;
+    }
+
+    B[by*16*4+laneid*2] = (Bval & 0xFFFF0000) >> 16;
+    B[by*16*4+laneid*2+1] = (Bval & 0x0000FFFF);
+}
+// 4 16x16 at the same time
+
+// row-major packing bit 16
+template <typename T>
+__global__ void ToBit16Row(const T* __restrict__ A, ushort* B, const int nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+
+    if (bx < (int)ceil((float)nblockrows/2)) {
+        unsigned Bval=0;
+#pragma unroll
+        for (int i=0; i<32; i++)
+        {
+            T f0 = A[bx*32+i];
+            Bval = (Bval<<1) + (f0>0);
+        }
+
+        B[bx*2] = (Bval & 0xFFFF0000) >> 16;
+        B[bx*2+1] = (Bval & 0x0000FFFF);
+    }
 }
 
 // weight should be col-major packing, layout is 32 * (32*numofblocks)
@@ -98,6 +188,116 @@ __global__ void ToBit64Row(const T* __restrict__  A, ullong* B, const int A_heig
             Bval = (Bval<<1) | (f0>0);
         }
         B[bx] = Bval;
+    }
+}
+
+template <typename Index, typename T>
+__global__ void bmv8_sparse(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
+                            const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                            const Index nblockrows, const Index nblocks, int* runtime, int* load)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < (int)ceil((float)nblockrows/4)) {
+#ifdef PROF
+        clock_t start_time = clock();
+#endif
+
+        // load
+        GET_LANEID;
+
+        int row_start=0, row_end=0, load=0;
+        if(bx*4+laneid/8<nblockrows) {
+            row_start = rowptr[bx*4+laneid/8];
+            row_end = rowptr[bx*4+laneid/8+1];
+            load = row_end-row_start;
+        }
+
+        const uchar* Asub = &(A[row_start*8]);
+        const uchar* Bsub = &(B[0]);
+        T* Csub = &(C[bx*32]);
+        register unsigned Cm[1] = {0};
+
+        // compute 4 blocks on 4 consecutive blockrow at a time
+        for(int i=0; i<(int)ceil((float)load/4)*4; i+=4) {
+            uchar a0 = i*8+laneid%8 < load*8 ? Asub[i*8+laneid%8] : 0;
+            uchar a1 = i*8+8+laneid%8 < load*8 ? Asub[i*8+8+laneid%8] : 0;
+            uchar a2 = i*8+16+laneid%8 < load*8 ? Asub[i*8+16+laneid%8] : 0;
+            uchar a3 = i*8+24+laneid%8 < load*8 ? Asub[i*8+24+laneid%8] : 0;
+            unsigned r0 = a0 << 24 | a1 << 16 | a2 << 8 | a3;
+
+            uchar b0 = i*8+laneid%8 < load*8 ? Bsub[colind[row_start+i]] : 0;
+            uchar b1 = i*8+8+laneid%8 < load*8 ? Bsub[colind[row_start+i+1]] : 0;
+            uchar b2 = i*8+16+laneid%8 < load*8 ? Bsub[colind[row_start+i+2]] : 0;
+            uchar b3 = i*8+24+laneid%8 < load*8 ? Bsub[colind[row_start+i+3]] : 0;
+            unsigned r1 = b0 << 24 | b1 << 16 | b2 << 8 | b3;
+
+            Cm[0] += __popc(r0 & r1);
+        }
+
+        // store
+        Csub[laneid] += (T)(Cm[0]);
+
+
+#ifdef PROF
+        clock_t stop_time = clock();
+        runtime[bx] = (int)(stop_time - start_time);
+        load[bx] = 0;//(int)(row_end-row_start); <--- temp
+//        GET_LANEID;
+//        if (laneid == 1 && load[bx] == 0) {printf("[%d] %d %d\n", bx, (int)(stop_time - start_time), (int)(row_end-row_start));}
+#endif
+    }
+}
+
+template <typename Index, typename T>
+__global__ void bmv16_sparse(const ushort* __restrict__ A, const ushort* __restrict__ B, T* C,
+                            const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                            const Index nblockrows, const Index nblocks, int* runtime, int* load)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < (int)ceil((float)nblockrows/2)) {
+#ifdef PROF
+        clock_t start_time = clock();
+#endif
+
+        // load
+        GET_LANEID;
+
+        int row_start=0, row_end=0, load=0;
+        if(bx*2+laneid/16<nblockrows) {
+            row_start = rowptr[bx*2+laneid/16];
+            row_end = rowptr[bx*2+laneid/16+1];
+            load = row_end-row_start;
+        }
+
+        const ushort* Asub = &(A[row_start*16]);
+        const ushort* Bsub = &(B[0]);
+        T* Csub = &(C[bx*32]);
+        register unsigned Cm[1] = {0};
+
+        // compute 2 blocks on 2 consecutive blockrow at a time
+        for(int i=0; i<(int)ceil((float)load/2)*2; i+=2) {
+            ushort a0 = i*16+laneid%16 < load*16 ? Asub[i*16+laneid%16] : 0;
+            ushort a1 = i*16+16+laneid%16 < load*16 ? Asub[i*16+16+laneid%16] : 0;
+            unsigned r0 = a0 << 16 | a1;
+
+            ushort b0 = i*16+laneid%16 < load*16 ? Bsub[colind[row_start+i]] : 0;
+            ushort b1 = i*16+laneid%16 < load*16 ? Bsub[colind[row_start+i+1]] : 0;
+            unsigned r1 = b0 << 16 | b1;
+
+            Cm[0] += __popc(r0 & r1);
+        }
+
+        // store
+        Csub[laneid] += (T)(Cm[0]);
+
+
+#ifdef PROF
+        clock_t stop_time = clock();
+        runtime[bx] = (int)(stop_time - start_time);
+        load[bx] = 0;//(int)(row_end-row_start); <--- temp
+//        GET_LANEID;
+//        if (laneid == 1 && load[bx] == 0) {printf("[%d] %d %d\n", bx, (int)(stop_time - start_time), (int)(row_end-row_start));}
+#endif
     }
 }
 
@@ -242,6 +442,56 @@ __global__ void bmv32_sparse_workloadsplit(const unsigned* __restrict__ A, const
 
     // store
     atomicAdd(Csub+laneid, (T)(Cm[0])); // <-- can tag the continuety
+
+#ifdef PROF
+        clock_t stop_time = clock();
+        runtime[bx] = (int)(stop_time - start_time);
+        load[bx] = workload;
+//        GET_LANEID;
+//        if (laneid == 1 && load[bx] == 0) {printf("[%d] %d %d\n", bx, (int)(stop_time - start_time), (int)(row_end-row_start));}
+#endif
+    }
+}
+
+template <typename Index, typename T>
+__global__ void bmv32_sparse_workloadsplit_register(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                           const Index* __restrict__ colind, const Index* __restrict__ workloadptr,
+                                           const Index workloadsize, const Index MAX, int* runtime, int* load)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < workloadsize) {
+#ifdef PROF
+        clock_t start_time = clock();
+#endif
+
+    // load
+    int row = workloadptr[bx*3];
+    int row_start = workloadptr[bx*3+1];
+    int workload = workloadptr[bx*3+2];
+
+    // compute
+    GET_LANEID;
+    const unsigned* Asub = &(A[row_start*32]); // block is in continuous layout
+    const unsigned* Bsub = &(B[0]); // 0, when it is mv
+    T* Csub = &(C[row*32]);
+    register unsigned Cm[1000] = {0}; // allocate 1 register <-- can parallelize
+
+    // compute
+    #pragma unroll
+    for (int i=row_start; i<row_start+workload; i++) {
+
+        unsigned r0 = Asub[(i-row_start)*32+laneid];
+        unsigned r1 = Bsub[(colind[i])];
+
+        Cm[i-row_start] += __popc(r0 & r1);
+    }
+
+    // store
+    T sum = 0;
+    for (int i=0; i<workload; i++) sum += (T)(Cm[i]);
+
+    atomicAdd(Csub+laneid, sum); // <-- can tag the continuety
+
 
 #ifdef PROF
         clock_t stop_time = clock();
@@ -608,7 +858,7 @@ __global__ void getWorkloadInfo (const int* __restrict__ rowptr, const int nbloc
 }
 
 //======================================================================================
-// Considering Workload Balancing -- fixed implementation
+// Considering Workload Balancing -- BCOO
 //======================================================================================
 // naive 32
 template <typename Index, typename T>
@@ -628,6 +878,7 @@ __global__ void bmv32_sparse_opt(const unsigned* __restrict__ A, const unsigned*
 
     // compute // can parallel by max
     int workload_end = bx*MAX+MAX < nblocks ? bx*MAX+MAX : nblocks;
+    register unsigned Cm[1] = {0};
 
     #pragma unroll
     for(int w=bx*MAX; w<workload_end; w++) {
@@ -642,6 +893,8 @@ __global__ void bmv32_sparse_opt(const unsigned* __restrict__ A, const unsigned*
         // store
         atomicAdd(&C[row*32+laneid], (T)(__popc(r0 & r1)));
     }
+
+
 
 #ifdef PROF
         clock_t stop_time = clock();

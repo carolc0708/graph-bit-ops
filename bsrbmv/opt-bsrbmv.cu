@@ -180,7 +180,7 @@ int main32(int argc, char* argv[])
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
         bmv32_sparse_opt<int, float><<<grid_ws, 32>>>(tA, tB, fC, rowind, bsrColInd, nblocks, MAX, runtime, load);
-        
+
     }
 
     bmv_timer.Stop();
