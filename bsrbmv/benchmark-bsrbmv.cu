@@ -1,7 +1,7 @@
 #include <iostream>
 #include <sys/time.h>
 
-#define TEST_TIMES 1
+#define TEST_TIMES 5
 using namespace std;
 
 #include <cuda.h>
@@ -31,6 +31,8 @@ int main8(int argc, char* argv[])
     int nrows, ncols, nnz, isSymmetric;
     mmio_info<float>(&nrows, &ncols, &nnz, &isSymmetric, filename);
     printf("nrows: %d, ncols: %d, nnz: %d, isSymmetric: ", nrows, ncols, nnz); printf(isSymmetric?"true\n":"false\n");
+    unsigned csrbytes = (nrows+1+nnz*2) * 4;
+    printf("csr total size: "); printBytes(csrbytes); printf("\n");
 
     // matrix csr in host
     int* h_csrRowPtr, *h_csrColInd;
@@ -83,6 +85,8 @@ int main8(int argc, char* argv[])
                         csrRowPtr, csrColInd, blocksize, bsr_descr, bsrRowPtr, &nblocks);
     cudaMalloc((void**)&bsrColInd, sizeof(int)*nblocks);
     printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
+    unsigned bytes = (nblocks * blocksize * 1 + (nblockrows+1+nblocks) * 4);
+    printf("bsr total size: "); printBytes(bytes); printf("\n");
 
     // packed matrix
     uchar* tA;
@@ -297,6 +301,8 @@ int main16(int argc, char* argv[])
     int nrows, ncols, nnz, isSymmetric;
     mmio_info<float>(&nrows, &ncols, &nnz, &isSymmetric, filename);
     printf("nrows: %d, ncols: %d, nnz: %d, isSymmetric: ", nrows, ncols, nnz); printf(isSymmetric?"true\n":"false\n");
+    unsigned csrbytes = (nrows+1+nnz*2) * 4;
+    printf("csr total size: "); printBytes(csrbytes); printf("\n");
 
     // matrix csr in host
     int* h_csrRowPtr, *h_csrColInd;
@@ -349,6 +355,8 @@ int main16(int argc, char* argv[])
                         csrRowPtr, csrColInd, blocksize, bsr_descr, bsrRowPtr, &nblocks);
     cudaMalloc((void**)&bsrColInd, sizeof(int)*nblocks);
     printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
+    unsigned bytes = (nblocks * blocksize * 2 + (nblockrows+1+nblocks) * 4);
+    printf("bsr total size: "); printBytes(bytes); printf("\n");
 
     // packed matrix
     ushort* tA;
@@ -563,6 +571,8 @@ int main32(int argc, char* argv[])
     int nrows, ncols, nnz, isSymmetric;
     mmio_info<float>(&nrows, &ncols, &nnz, &isSymmetric, filename);
     printf("nrows: %d, ncols: %d, nnz: %d, isSymmetric: ", nrows, ncols, nnz); printf(isSymmetric?"true\n":"false\n");
+    unsigned csrbytes = (nrows+1+nnz*2) * 4;
+    printf("csr total size: "); printBytes(csrbytes); printf("\n");
 
     // matrix csr in host
     int* h_csrRowPtr, *h_csrColInd;
@@ -615,6 +625,8 @@ int main32(int argc, char* argv[])
                         csrRowPtr, csrColInd, blocksize, bsr_descr, bsrRowPtr, &nblocks);
     cudaMalloc((void**)&bsrColInd, sizeof(int)*nblocks);
     printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
+    unsigned bytes = (nblocks * blocksize * 4 + (nblockrows+1+nblocks) * 4);
+    printf("bsr total size: "); printBytes(bytes); printf("\n");
 
     // packed matrix
     unsigned* tA;
@@ -827,6 +839,8 @@ int main64(int argc, char* argv[])
     int nrows, ncols, nnz, isSymmetric;
     mmio_info<float>(&nrows, &ncols, &nnz, &isSymmetric, filename);
     printf("nrows: %d, ncols: %d, nnz: %d, isSymmetric: ", nrows, ncols, nnz); printf(isSymmetric?"true\n":"false\n");
+    unsigned csrbytes = (nrows+1+nnz*2) * 4;
+    printf("csr total size: "); printBytes(csrbytes); printf("\n");
 
     // matrix csr in host
     int* h_csrRowPtr, *h_csrColInd;
@@ -879,6 +893,8 @@ int main64(int argc, char* argv[])
                         csrRowPtr, csrColInd, blocksize, bsr_descr, bsrRowPtr, &nblocks);
     cudaMalloc((void**)&bsrColInd, sizeof(int)*nblocks);
     printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
+    unsigned bytes = (nblocks * blocksize * 8 + (nblockrows+1+nblocks) * 4);
+    printf("bsr total size: "); printBytes(bytes); printf("\n");
 
     // packed matrix tA
     ullong* tA;

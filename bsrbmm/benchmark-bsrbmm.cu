@@ -78,6 +78,8 @@ int main8(int argc, char* argv[])
     cudaMemcpy(&A_nnz, d_A_nnz, sizeof(int) * 1, cudaMemcpyDeviceToHost);
 
     printf("nnz before tril_csr(): %d, after tril_csr(): %d\n", nnz, A_nnz); // <- we ignore A's [A_nnz to nnz] from now
+    unsigned csrbytes = (nrows+1+A_nnz*2) * 4 * 2;
+    printf("csr total size: "); printBytes(csrbytes); printf("\n");
 //    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
 //    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
 //    printResVec<float><<<1,1>>>(A_csrVal, A_nnz);
@@ -124,6 +126,8 @@ int main8(int argc, char* argv[])
                         A_csrRowPtr, A_csrColInd, blocksize, bsr_descr, A_bsrRowPtr, &nblocks);
     cudaMalloc((void**)&A_bsrColInd, sizeof(int)*nblocks);
     printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
+    unsigned bytes = (nblocks * blocksize * 1 + (nblockrows+1+nblocks) * 4) * 2;
+    printf("bsr total size: "); printBytes(bytes); printf("\n");
 
     // free cusparse descr and handle memory
     cusparseDestroyMatDescr(csr_descr);
@@ -227,9 +231,6 @@ int *runtime;
     int ntris_bmm;
     cudaMemcpy(&ntris_bmm, result_bsrbmm8, sizeof(int) * 1, cudaMemcpyDeviceToHost);
 
-    printf("==========================================\n");
-    uchar size = (nblocks * blocksize * 4 + (nblockrows+1+nblocks) * 4) * 2/1024;
-    printf("nblocks: %d, bsr total size: %d (KB)\n", nblocks, (int)size);
     printf("ntris_bmm: %d\n", ntris_bmm);
     printf("BSR BMM-8: %.3lf\n", bmm8_time);
 
@@ -442,6 +443,8 @@ int main16(int argc, char* argv[])
     cudaMemcpy(&A_nnz, d_A_nnz, sizeof(int) * 1, cudaMemcpyDeviceToHost);
 
     printf("nnz before tril_csr(): %d, after tril_csr(): %d\n", nnz, A_nnz); // <- we ignore A's [A_nnz to nnz] from now
+    unsigned csrbytes = (nrows+1+A_nnz*2) * 4 * 2;
+    printf("csr total size: "); printBytes(csrbytes); printf("\n");
 //    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
 //    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
 //    printResVec<float><<<1,1>>>(A_csrVal, A_nnz);
@@ -488,6 +491,8 @@ int main16(int argc, char* argv[])
                         A_csrRowPtr, A_csrColInd, blocksize, bsr_descr, A_bsrRowPtr, &nblocks);
     cudaMalloc((void**)&A_bsrColInd, sizeof(int)*nblocks);
     printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
+    unsigned bytes = (nblocks * blocksize * 2 + (nblockrows+1+nblocks) * 4) * 2;
+    printf("bsr total size: "); printBytes(bytes); printf("\n");
 
     // free cusparse descr and handle memory
     cusparseDestroyMatDescr(csr_descr);
@@ -591,9 +596,6 @@ int *runtime;
     int ntris_bmm;
     cudaMemcpy(&ntris_bmm, result_bsrbmm16, sizeof(int) * 1, cudaMemcpyDeviceToHost);
 
-    printf("==========================================\n");
-    ushort size = (nblocks * blocksize * 4 + (nblockrows+1+nblocks) * 4) * 2/1024;
-    printf("nblocks: %d, bsr total size: %d (KB)\n", nblocks, (int)size);
     printf("ntris_bmm: %d\n", ntris_bmm);
     printf("BSR BMM-16: %.3lf\n", bmm16_time);
 
@@ -805,7 +807,8 @@ int main32(int argc, char* argv[])
                                   A_csrRowPtr, A_csrColInd, A_csrVal, d_A_nnz);
     cudaMemcpy(&A_nnz, d_A_nnz, sizeof(int) * 1, cudaMemcpyDeviceToHost);
     printf("nnz before tril_csr(): %d, after tril_csr(): %d\n", nnz, A_nnz); // <- we ignore A's [A_nnz to nnz] from now
-
+    unsigned csrbytes = (nrows+1+A_nnz*2) * 4 * 2;
+    printf("csr total size: "); printBytes(csrbytes); printf("\n");
 //    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
 //    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
 //    printResVec<float><<<1,1>>>(A_csrVal, A_nnz);
@@ -852,6 +855,8 @@ int main32(int argc, char* argv[])
                         A_csrRowPtr, A_csrColInd, blocksize, bsr_descr, A_bsrRowPtr, &nblocks);
     cudaMalloc((void**)&A_bsrColInd, sizeof(int)*nblocks);
     printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
+    unsigned bytes = (nblocks * blocksize * 4 + (nblockrows+1+nblocks) * 4) * 2;
+    printf("bsr total size: "); printBytes(bytes); printf("\n");
 
     // free cusparse descr and handle memory
     cusparseDestroyMatDescr(csr_descr);
@@ -956,9 +961,6 @@ int *runtime;
     int ntris_bmm;
     cudaMemcpy(&ntris_bmm, result_bsrbmm32, sizeof(int) * 1, cudaMemcpyDeviceToHost);
 
-    printf("==========================================\n");
-    unsigned size = (nblocks * blocksize * 4 + (nblockrows+1+nblocks) * 4) * 2/1024;
-    printf("nblocks: %d, bsr total size: %d (KB)\n", nblocks, (int)size);
     printf("ntris_bmm: %d\n", ntris_bmm);
     printf("BSR BMM-32: %.3lf\n", bmm32_time);
 
@@ -1170,6 +1172,8 @@ int main64(int argc, char* argv[])
                                   A_csrRowPtr, A_csrColInd, A_csrVal, d_A_nnz);
     cudaMemcpy(&A_nnz, d_A_nnz, sizeof(int) * 1, cudaMemcpyDeviceToHost);
     printf("nnz before tril_csr(): %d, after tril_csr(): %d\n", nnz, A_nnz); // <- we ignore A's [A_nnz to nnz] from now
+    unsigned csrbytes = (nrows+1+A_nnz*2) * 4 * 2;
+    printf("csr total size: "); printBytes(csrbytes); printf("\n");
 
 //    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
 //    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
@@ -1217,6 +1221,8 @@ int main64(int argc, char* argv[])
                         A_csrRowPtr, A_csrColInd, blocksize, bsr_descr, A_bsrRowPtr, &nblocks);
     cudaMalloc((void**)&A_bsrColInd, sizeof(int)*nblocks);
     printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
+    unsigned bytes = (nblocks * blocksize * 8 + (nblockrows+1+nblocks) * 4) * 2;
+    printf("bsr total size: "); printBytes(bytes); printf("\n");
 
     // free cusparse descr and handle memory
     cusparseDestroyMatDescr(csr_descr);
@@ -1321,10 +1327,6 @@ int *runtime;
     int ntris_bmm;
     cudaMemcpy(&ntris_bmm, result_bsrbmm64, sizeof(int) * 1, cudaMemcpyDeviceToHost);
 
-
-    printf("==========================================\n");
-    unsigned size = (nblocks * blocksize * 8 + (nblockrows+1+nblocks) * 4) * 2/1024;
-    printf("nblocks: %d, bsr total size: %d (KB)\n", nblocks, (int)size);
     printf("ntris_bmm: %d\n", ntris_bmm);
     printf("BSR BMM-64: %.3lf\n", bmm64_time);
 

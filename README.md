@@ -6,13 +6,15 @@
 
 ## BSR BMV (verified)
 * in directory `/bsrbmv`
-* `make` to get `bsrbmv32`, `bsrbmv64`
+* `make` to get `bsrbmv8`, `bsrbmv16`, `bsrbmv32`, `bsrbmv64`
 * `./bsrbmv32 {/path/to/matrix/file.mtx}`
+* OR use `./testbsrbmv.sh` to test all matrices
 
 ## BSR BMM (verified)
 * in directory `/bsrbmm`
-* `make` to get `bsrbmm32`, `bsrbmm64`
+* `make` to get `bsrbmm8`, `bsrbmm16`, `bsrbmm32`, `bsrbmm64`
 * `./bsrbmm32 {/path/to/matrix/file.mtx}`
+* OR use `./testbsrbmm.sh` to test all matrices
 
 ## BMM (result not verified)
 * in directory `/bmm`

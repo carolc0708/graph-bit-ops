@@ -499,3 +499,30 @@ __global__ void setWorkloadSizeListAcc(int* workload_size_list_acc, const int *w
         workload_size_list_acc[i] = workload_size_list_acc[i-1] + workload_size_list[i-1] + 2;
     }
 }
+
+//======================================================================================
+// Print function for bytes
+//======================================================================================
+// Prints to the provided buffer a nice number of bytes (KB, MB, GB, etc)
+void printBytes(unsigned bytes)
+{
+    const char* suffixes[7];
+    suffixes[0] = "B";
+    suffixes[1] = "KB";
+    suffixes[2] = "MB";
+    suffixes[3] = "GB";
+    suffixes[4] = "TB";
+    suffixes[5] = "PB";
+    suffixes[6] = "EB";
+    uint s = 0; // which suffix to use
+    double count = bytes;
+    while (count >= 1024 && s < 7)
+    {
+        s++;
+        count /= 1024;
+    }
+    if (count - floor(count) == 0.0)
+        printf("%d (%s)", (int)count, suffixes[s]);
+    else
+        printf("%.1f (%s)", count, suffixes[s]);
+}
