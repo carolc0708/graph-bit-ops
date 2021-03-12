@@ -1,7 +1,7 @@
 #include <iostream>
 #include <sys/time.h>
 
-#define TEST_TIMES 5
+#define TEST_TIMES 1
 using namespace std;
 
 #include <cuda.h>
