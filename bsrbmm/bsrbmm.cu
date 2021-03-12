@@ -231,11 +231,22 @@ __global__ void bmm8_sparse(const uchar* __restrict__ A, const uchar* __restrict
         } // i in [A_row_start ... A_row_end]
 
         // store
+
         for (int l=0; l<8; l++) sum += Cm[l];
+
+        atomicAdd(Csub, sum);
+
+//        __shared__ int result[32];
+//        result[laneid] = sum;
+//
 //        __syncthreads();
-//        Csub[bx] += sum;
-//        __syncthreads();
-        atomicAdd(Csub+bx, sum);
+//
+//        if (laneid == 0) {
+//            for(int i=0; i<32; i++) {
+//                Csub[bx] += result[i];
+//            }
+//        }
+
 
 #ifdef PROF
         clock_t stop_time = clock();
@@ -296,7 +307,7 @@ __global__ void bmm16_sparse(const ushort* __restrict__ A, const ushort* __restr
 
         // store
         for (int l=0; l<16; l++) sum += Cm[l];
-        atomicAdd(Csub+bx, sum);
+        atomicAdd(Csub, sum);
 
 #ifdef PROF
         clock_t stop_time = clock();
@@ -358,10 +369,8 @@ __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __r
         } // i in [A_row_start ... A_row_end]
 
         // store
-//        __syncthreads();
         for (int l=0; l<32; l++) sum += Cm[l];
-        atomicAdd(Csub+bx, sum);
-//        __syncthreads();
+        atomicAdd(Csub, sum);
 
 #ifdef PROF
         clock_t stop_time = clock();
@@ -428,10 +437,8 @@ __global__ void bmm64_sparse(const ullong* __restrict__ A, const ullong* __restr
         } // i in [A_row_start ... A_row_end]
 
         // store
-//        __syncthreads();
         for (int l=0; l<64; l++) sum += Cm[l];
-        atomicAdd(Csub+bx, sum);
-//        __syncthreads();
+        atomicAdd(Csub, sum);
 
 #ifdef PROF
         clock_t stop_time = clock();
@@ -593,7 +600,7 @@ __global__ void bmm32_sparse_workloadmergeNsplit(const unsigned* __restrict__ A,
 
         // store
         for (int l=0; l<32; l++) sum += Cm[l];
-        atomicAdd(Csub+row, sum);
+        atomicAdd(Csub, sum);
 
     } // w < numworkload
 

@@ -80,9 +80,6 @@ int main8(int argc, char* argv[])
     printf("nnz before tril_csr(): %d, after tril_csr(): %d\n", nnz, A_nnz); // <- we ignore A's [A_nnz to nnz] from now
     unsigned csrbytes = (nrows+1+A_nnz*2) * 4 * 2;
     printf("csr total size: "); printBytes(csrbytes); printf("\n");
-//    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
-//    printResVec<float><<<1,1>>>(A_csrVal, A_nnz);
 
     // reset host csr with updated matrix
     free(h_csrVal);
@@ -161,8 +158,6 @@ int main8(int argc, char* argv[])
     h_B_cscColPtr = (int*) malloc(sizeof(int) * (nrows+1));
     cudaMemcpy(h_B_cscRowInd, B_cscRowInd, sizeof(int) * A_nnz, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_B_cscColPtr, B_cscColPtr, sizeof(int) * (nrows+1), cudaMemcpyDeviceToHost);
-//    cudaFree(B_cscRowInd);
-//    cudaFree(B_cscColPtr);
 
     // csr2bsr for B & pack matrix for tB
     int* B_bsrRowPtr, *B_bsrColInd;
@@ -175,20 +170,13 @@ int main8(int argc, char* argv[])
     free(h_B_cscRowInd);
     free(h_B_cscColPtr);
 
-//    printDeviceIndArr<int><<<1,1>>>(A_bsrRowPtr, nblockrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_bsrColInd, nblocks);
-//    printBin8Vec<<<1,1>>>(tA, nblocks*blocksize);
-//    printDeviceIndArr<int><<<1,1>>>(B_bsrRowPtr, nblockrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(B_bsrColInd, nblocks);
-//    printBin8Vec<<<1,1>>>(tB, nblocks*blocksize);
-
 
     // ============================================= BSTC-8 bsr bmm
     // allocate bsr storage for resulting C
     // use 1 float to store the reduced sum for now
     int* fC;
-	cudaMalloc((void**)&fC, sizeof(int) * nblockrows);
-	setDeviceValArr<int, int><<<1,1>>>(fC, nblockrows, 0);
+	cudaMalloc((void**)&fC, sizeof(int) * 1);
+	setDeviceValArr<int, int><<<1,1>>>(fC, 1, 0);
 
     // get grid dim
     int gridDim = (int)ceil(cbrt((double)nblockrows));
@@ -224,17 +212,11 @@ int *runtime;
     printTimeReport<<<1,1>>>(runtime, nblockrows); cudaFree(runtime);
 #endif
 
-//    printf("fC: \n"); printResVec<int><<<1,1>>>(fC, nblockrows);
-    int* result_bsrbmm8;
-    cudaMalloc((void**)&result_bsrbmm8, sizeof(int) * 1);
-    reuduceSum<int><<<1,1>>>(fC, nblockrows, result_bsrbmm8);
     int ntris_bmm;
-    cudaMemcpy(&ntris_bmm, result_bsrbmm8, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+    cudaMemcpy(&ntris_bmm, fC, sizeof(int) * 1, cudaMemcpyDeviceToHost);
 
     printf("ntris_bmm: %d\n", ntris_bmm);
     printf("BSR BMM-8: %.3lf\n", bmm8_time);
-
-    cudaFree(result_bsrbmm8);
 
     // ============================================= cuSPARSE csr spgemm-float
     // setup cusparse metadata
@@ -269,11 +251,6 @@ int *runtime;
     cudaMemcpy(B_csrColInd, B_cscRowInd, sizeof(int) * B_nnz, cudaMemcpyDeviceToDevice);
     cudaMemcpy(B_csrVal, B_cscVal, sizeof(float) * B_nnz, cudaMemcpyDeviceToDevice);
 
-//    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
-//    printDeviceIndArr<int><<<1,1>>>(B_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(B_csrColInd, B_nnz);
-
     // calculate nnz in C and allocate storage
     int* C_csrRowPtr, *C_csrColInd;
     float* C_csrVal;
@@ -286,7 +263,6 @@ int *runtime;
 
     cudaMalloc(&C_csrColInd, sizeof(int) * C_nnz);
     cudaMalloc(&C_csrVal, sizeof(float) * C_nnz);
-//    printf("result C_csrVal nnz: %d\n", C_nnz);
 
     // ------
 
@@ -303,24 +279,7 @@ int *runtime;
     csr_timer.Stop();
     double cusparsecsrspgemmfloat_time = csr_timer.ElapsedMillis()/double(TEST_TIMES);
 
-//    printDeviceIndArr<int><<<1,1>>>(C_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(C_csrColInd, C_nnz);
-//    printResVec<float><<<1,1>>>(C_csrVal, C_nnz);
-
     // ------
-
-    // the result include C_csrVal, C_csrRowPtr, C_csrColInd
-//    printResVec<int><<<1,1>>>(C_csrRowPtr, nrows+1);
-//    printResVec<int><<<1,1>>>(C_csrColInd, C_nnz);
-//    printf("C_csrVal: \n"); printResVec<float><<<1,1>>>(C_csrVal, C_nnz);
-
-//    float* resvec;
-//    cudaMalloc((void**)&resvec, sizeof(float) * nblockrows);
-//    setDeviceValArr<int, float><<<1,1>>>(resvec, nblockrows, 0.0);
-//    gatherNnzbyBlockrow<<<1,1>>>(C_csrRowPtr, C_csrColInd, C_csrVal,
-//                                 nrows, nblockrows, blocksize, resvec);
-//    printf("C_csrVal (gather by blockrow): \n"); printResVec<float><<<1,1>>>(resvec, nblockrows);
-
 
     int* result_cusparsecsrspgemmfloat;
     cudaMalloc((void**)&result_cusparsecsrspgemmfloat, sizeof(int) * 1);
@@ -445,9 +404,6 @@ int main16(int argc, char* argv[])
     printf("nnz before tril_csr(): %d, after tril_csr(): %d\n", nnz, A_nnz); // <- we ignore A's [A_nnz to nnz] from now
     unsigned csrbytes = (nrows+1+A_nnz*2) * 4 * 2;
     printf("csr total size: "); printBytes(csrbytes); printf("\n");
-//    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
-//    printResVec<float><<<1,1>>>(A_csrVal, A_nnz);
 
     // reset host csr with updated matrix
     free(h_csrVal);
@@ -526,8 +482,6 @@ int main16(int argc, char* argv[])
     h_B_cscColPtr = (int*) malloc(sizeof(int) * (nrows+1));
     cudaMemcpy(h_B_cscRowInd, B_cscRowInd, sizeof(int) * A_nnz, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_B_cscColPtr, B_cscColPtr, sizeof(int) * (nrows+1), cudaMemcpyDeviceToHost);
-//    cudaFree(B_cscRowInd);
-//    cudaFree(B_cscColPtr);
 
     // csr2bsr for B & pack matrix for tB
     int* B_bsrRowPtr, *B_bsrColInd;
@@ -540,20 +494,12 @@ int main16(int argc, char* argv[])
     free(h_B_cscRowInd);
     free(h_B_cscColPtr);
 
-//    printDeviceIndArr<int><<<1,1>>>(A_bsrRowPtr, nblockrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_bsrColInd, nblocks);
-//    printBin16Vec<<<1,1>>>(tA, nblocks*blocksize);
-//    printDeviceIndArr<int><<<1,1>>>(B_bsrRowPtr, nblockrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(B_bsrColInd, nblocks);
-//    printBin16Vec<<<1,1>>>(tB, nblocks*blocksize);
-
-
     // ============================================= BSTC-16 bsr bmm
     // allocate bsr storage for resulting C
     // use 1 float to store the reduced sum for now
     int* fC;
-	cudaMalloc((void**)&fC, sizeof(int) * nblockrows);
-	setDeviceValArr<int, int><<<1,1>>>(fC, nblockrows, 0);
+	cudaMalloc((void**)&fC, sizeof(int) * 1);
+	setDeviceValArr<int, int><<<1,1>>>(fC, 1, 0);
 
     // get grid dim
     int gridDim = (int)ceil(cbrt((double)nblockrows));
@@ -589,17 +535,12 @@ int *runtime;
     printTimeReport<<<1,1>>>(runtime, nblockrows); cudaFree(runtime);
 #endif
 
-//    printf("fC: \n"); printResVec<int><<<1,1>>>(fC, nblockrows);
-    int* result_bsrbmm16;
-    cudaMalloc((void**)&result_bsrbmm16, sizeof(int) * 1);
-    reuduceSum<int><<<1,1>>>(fC, nblockrows, result_bsrbmm16);
+
     int ntris_bmm;
-    cudaMemcpy(&ntris_bmm, result_bsrbmm16, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+    cudaMemcpy(&ntris_bmm, fC, sizeof(int) * 1, cudaMemcpyDeviceToHost);
 
     printf("ntris_bmm: %d\n", ntris_bmm);
     printf("BSR BMM-16: %.3lf\n", bmm16_time);
-
-    cudaFree(result_bsrbmm16);
 
     // ============================================= cuSPARSE csr spgemm-float
     // setup cusparse metadata
@@ -634,11 +575,6 @@ int *runtime;
     cudaMemcpy(B_csrColInd, B_cscRowInd, sizeof(int) * B_nnz, cudaMemcpyDeviceToDevice);
     cudaMemcpy(B_csrVal, B_cscVal, sizeof(float) * B_nnz, cudaMemcpyDeviceToDevice);
 
-//    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
-//    printDeviceIndArr<int><<<1,1>>>(B_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(B_csrColInd, B_nnz);
-
     // calculate nnz in C and allocate storage
     int* C_csrRowPtr, *C_csrColInd;
     float* C_csrVal;
@@ -651,7 +587,6 @@ int *runtime;
 
     cudaMalloc(&C_csrColInd, sizeof(int) * C_nnz);
     cudaMalloc(&C_csrVal, sizeof(float) * C_nnz);
-//    printf("result C_csrVal nnz: %d\n", C_nnz);
 
     // ------
 
@@ -668,24 +603,7 @@ int *runtime;
     csr_timer.Stop();
     double cusparsecsrspgemmfloat_time = csr_timer.ElapsedMillis()/double(TEST_TIMES);
 
-//    printDeviceIndArr<int><<<1,1>>>(C_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(C_csrColInd, C_nnz);
-//    printResVec<float><<<1,1>>>(C_csrVal, C_nnz);
-
     // ------
-
-    // the result include C_csrVal, C_csrRowPtr, C_csrColInd
-//    printResVec<int><<<1,1>>>(C_csrRowPtr, nrows+1);
-//    printResVec<int><<<1,1>>>(C_csrColInd, C_nnz);
-//    printf("C_csrVal: \n"); printResVec<float><<<1,1>>>(C_csrVal, C_nnz);
-
-//    float* resvec;
-//    cudaMalloc((void**)&resvec, sizeof(float) * nblockrows);
-//    setDeviceValArr<int, float><<<1,1>>>(resvec, nblockrows, 0.0);
-//    gatherNnzbyBlockrow<<<1,1>>>(C_csrRowPtr, C_csrColInd, C_csrVal,
-//                                 nrows, nblockrows, blocksize, resvec);
-//    printf("C_csrVal (gather by blockrow): \n"); printResVec<float><<<1,1>>>(resvec, nblockrows);
-
 
     int* result_cusparsecsrspgemmfloat;
     cudaMalloc((void**)&result_cusparsecsrspgemmfloat, sizeof(int) * 1);
@@ -809,9 +727,6 @@ int main32(int argc, char* argv[])
     printf("nnz before tril_csr(): %d, after tril_csr(): %d\n", nnz, A_nnz); // <- we ignore A's [A_nnz to nnz] from now
     unsigned csrbytes = (nrows+1+A_nnz*2) * 4 * 2;
     printf("csr total size: "); printBytes(csrbytes); printf("\n");
-//    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
-//    printResVec<float><<<1,1>>>(A_csrVal, A_nnz);
 
     // reset host csr with updated matrix
     free(h_csrVal);
@@ -890,8 +805,6 @@ int main32(int argc, char* argv[])
     h_B_cscColPtr = (int*) malloc(sizeof(int) * (nrows+1));
     cudaMemcpy(h_B_cscRowInd, B_cscRowInd, sizeof(int) * A_nnz, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_B_cscColPtr, B_cscColPtr, sizeof(int) * (nrows+1), cudaMemcpyDeviceToHost);
-//    cudaFree(B_cscRowInd);
-//    cudaFree(B_cscColPtr);
 
     // csr2bsr for B & pack matrix for tB
     int* B_bsrRowPtr, *B_bsrColInd;
@@ -904,20 +817,12 @@ int main32(int argc, char* argv[])
     free(h_B_cscRowInd);
     free(h_B_cscColPtr);
 
-//    printDeviceIndArr<int><<<1,1>>>(A_bsrRowPtr, nblockrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_bsrColInd, nblocks);
-//    printBin32Vec<<<1,1>>>(tA, nblocks*blocksize);
-//    printDeviceIndArr<int><<<1,1>>>(B_bsrRowPtr, nblockrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(B_bsrColInd, nblocks);
-//    printBin32Vec<<<1,1>>>(tB, nblocks*blocksize);
-
-
     // ============================================= BSTC-32 bsr bmm
     // allocate bsr storage for resulting C
     // use 1 float to store the reduced sum for now
     int* fC;
-	cudaMalloc((void**)&fC, sizeof(int) * nblockrows);
-	setDeviceValArr<int, int><<<1,1>>>(fC, nblockrows, 0);
+	cudaMalloc((void**)&fC, sizeof(int) * 1);
+	setDeviceValArr<int, int><<<1,1>>>(fC, 1, 0);
 
     // get grid dim
     int gridDim = (int)ceil(cbrt((double)nblockrows));
@@ -954,17 +859,11 @@ int *runtime;
     printTimeReport<<<1,1>>>(runtime, nblockrows); cudaFree(runtime);
 #endif
 
-//    printf("fC: \n"); printResVec<int><<<1,1>>>(fC, nblockrows);
-    int* result_bsrbmm32;
-    cudaMalloc((void**)&result_bsrbmm32, sizeof(int) * 1);
-    reuduceSum<int><<<1,1>>>(fC, nblockrows, result_bsrbmm32);
     int ntris_bmm;
-    cudaMemcpy(&ntris_bmm, result_bsrbmm32, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+    cudaMemcpy(&ntris_bmm, fC, sizeof(int) * 1, cudaMemcpyDeviceToHost);
 
     printf("ntris_bmm: %d\n", ntris_bmm);
     printf("BSR BMM-32: %.3lf\n", bmm32_time);
-
-    cudaFree(result_bsrbmm32);
 
     // ============================================= cuSPARSE csr spgemm-float
     // setup cusparse metadata
@@ -999,11 +898,6 @@ int *runtime;
     cudaMemcpy(B_csrColInd, B_cscRowInd, sizeof(int) * B_nnz, cudaMemcpyDeviceToDevice);
     cudaMemcpy(B_csrVal, B_cscVal, sizeof(float) * B_nnz, cudaMemcpyDeviceToDevice);
 
-//    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
-//    printDeviceIndArr<int><<<1,1>>>(B_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(B_csrColInd, B_nnz);
-
     // calculate nnz in C and allocate storage
     int* C_csrRowPtr, *C_csrColInd;
     float* C_csrVal;
@@ -1033,24 +927,7 @@ int *runtime;
     csr_timer.Stop();
     double cusparsecsrspgemmfloat_time = csr_timer.ElapsedMillis()/double(TEST_TIMES);
 
-//    printDeviceIndArr<int><<<1,1>>>(C_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(C_csrColInd, C_nnz);
-//    printResVec<float><<<1,1>>>(C_csrVal, C_nnz);
-
     // ------
-
-    // the result include C_csrVal, C_csrRowPtr, C_csrColInd
-//    printResVec<int><<<1,1>>>(C_csrRowPtr, nrows+1);
-//    printResVec<int><<<1,1>>>(C_csrColInd, C_nnz);
-//    printf("C_csrVal: \n"); printResVec<float><<<1,1>>>(C_csrVal, C_nnz);
-
-//    float* resvec;
-//    cudaMalloc((void**)&resvec, sizeof(float) * nblockrows);
-//    setDeviceValArr<int, float><<<1,1>>>(resvec, nblockrows, 0.0);
-//    gatherNnzbyBlockrow<<<1,1>>>(C_csrRowPtr, C_csrColInd, C_csrVal,
-//                                 nrows, nblockrows, blocksize, resvec);
-//    printf("C_csrVal (gather by blockrow): \n"); printResVec<float><<<1,1>>>(resvec, nblockrows);
-
 
     int* result_cusparsecsrspgemmfloat;
     cudaMalloc((void**)&result_cusparsecsrspgemmfloat, sizeof(int) * 1);
@@ -1175,10 +1052,6 @@ int main64(int argc, char* argv[])
     unsigned csrbytes = (nrows+1+A_nnz*2) * 4 * 2;
     printf("csr total size: "); printBytes(csrbytes); printf("\n");
 
-//    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
-//    printResVec<float><<<1,1>>>(A_csrVal, A_nnz);
-
     // reset host csr with updated matrix
     free(h_csrVal);
     free(h_csrColInd);
@@ -1256,8 +1129,6 @@ int main64(int argc, char* argv[])
     h_B_cscColPtr = (int*) malloc(sizeof(int) * (nrows+1));
     cudaMemcpy(h_B_cscRowInd, B_cscRowInd, sizeof(int) * A_nnz, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_B_cscColPtr, B_cscColPtr, sizeof(int) * (nrows+1), cudaMemcpyDeviceToHost);
-//    cudaFree(B_cscRowInd);
-//    cudaFree(B_cscColPtr);
 
     // csr2bsr for B & pack matrix for tB
     int* B_bsrRowPtr, *B_bsrColInd;
@@ -1270,20 +1141,12 @@ int main64(int argc, char* argv[])
     free(h_B_cscRowInd);
     free(h_B_cscColPtr);
 
-//    printDeviceIndArr<int><<<1,1>>>(A_bsrRowPtr, nblockrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_bsrColInd, nblocks);
-//    printBin32Vec<<<1,1>>>(tA, nblocks*blocksize);
-//    printDeviceIndArr<int><<<1,1>>>(B_bsrRowPtr, nblockrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(B_bsrColInd, nblocks);
-//    printBin32Vec<<<1,1>>>(tB, nblocks*blocksize);
-
-
     // ============================================= BSTC-64 bsr bmm
     // allocate bsr storage for resulting C
     // use 1 float to store the reduced sum for now
     int* fC;
-	cudaMalloc((void**)&fC, sizeof(int) * nblockrows);
-	setDeviceValArr<int, int><<<1,1>>>(fC, nblockrows, 0);
+	cudaMalloc((void**)&fC, sizeof(int) * 1);
+	setDeviceValArr<int, int><<<1,1>>>(fC, 1, 0);
 
     // get grid dim
     int gridDim = (int)ceil(cbrt((double)nblockrows));
@@ -1320,17 +1183,11 @@ int *runtime;
     printTimeReport<<<1,1>>>(runtime, nblockrows); cudaFree(runtime);
 #endif
 
-//    printf("fC: \n"); printResVec<int><<<1,1>>>(fC, nblockrows);
-    int* result_bsrbmm64;
-    cudaMalloc((void**)&result_bsrbmm64, sizeof(int) * 1);
-    reuduceSum<int><<<1,1>>>(fC, nblockrows, result_bsrbmm64);
     int ntris_bmm;
-    cudaMemcpy(&ntris_bmm, result_bsrbmm64, sizeof(int) * 1, cudaMemcpyDeviceToHost);
+    cudaMemcpy(&ntris_bmm, fC, sizeof(int) * 1, cudaMemcpyDeviceToHost);
 
     printf("ntris_bmm: %d\n", ntris_bmm);
     printf("BSR BMM-64: %.3lf\n", bmm64_time);
-
-    cudaFree(result_bsrbmm64);
 
     // ============================================= cuSPARSE csr spgemm-float
     // setup cusparse metadata
@@ -1365,11 +1222,6 @@ int *runtime;
     cudaMemcpy(B_csrColInd, B_cscRowInd, sizeof(int) * B_nnz, cudaMemcpyDeviceToDevice);
     cudaMemcpy(B_csrVal, B_cscVal, sizeof(float) * B_nnz, cudaMemcpyDeviceToDevice);
 
-//    printDeviceIndArr<int><<<1,1>>>(A_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(A_csrColInd, A_nnz);
-//    printDeviceIndArr<int><<<1,1>>>(B_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(B_csrColInd, B_nnz);
-
     // calculate nnz in C and allocate storage
     int* C_csrRowPtr, *C_csrColInd;
     float* C_csrVal;
@@ -1382,7 +1234,6 @@ int *runtime;
 
     cudaMalloc(&C_csrColInd, sizeof(int) * C_nnz);
     cudaMalloc(&C_csrVal, sizeof(float) * C_nnz);
-//    printf("result C_csrVal nnz: %d\n", C_nnz);
 
     // ------
 
@@ -1398,10 +1249,6 @@ int *runtime;
 
     csr_timer.Stop();
     double cusparsecsrspgemmfloat_time = csr_timer.ElapsedMillis()/double(TEST_TIMES);
-
-//    printDeviceIndArr<int><<<1,1>>>(C_csrRowPtr, nrows+1);
-//    printDeviceIndArr<int><<<1,1>>>(C_csrColInd, C_nnz);
-//    printResVec<float><<<1,1>>>(C_csrVal, C_nnz);
 
     // ------
 
