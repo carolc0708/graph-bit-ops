@@ -1,6 +1,7 @@
 CC = nvcc
 
 FLAGS = -arch=sm_60 -O3 -std=c++11 -w # -Xptxas --maxrregcount=96
+# FLAGS = -arch=sm_70 -O3 -std=c++11 -w # -Xptxas --maxrregcount=96
 LINK = -lcublas -lcusparse -lcudart
 
 all: bsrbmm8 bsrbmm16 bsrbmm32 bsrbmm64

@@ -35,8 +35,7 @@ __global__ void ToBit8Col(const T* __restrict__ A, uchar* B, const int nblocks)
     for (int i=0; i<32; i++)
     {
         T f0 = by*8*8*4*4+i*32+laneid < nblocks*8*8 ? A[by*8*8*4*4+i*32+laneid] : 0; // <-- laneid will get consecutive 32 (half-block)
-        unsigned r0 = __brev(__ballot(f0>0));
-
+        unsigned r0 = __brev(__ballot_sync(0xFFFFFFFF, f0>0?1:0)); //__brev(__ballot(f0>0));
         if (laneid == i) Bval = r0;
     }
 
@@ -80,7 +79,7 @@ __global__ void ToBit16Col(const T* __restrict__ A, ushort* B, const int nblocks
     for (int i=0; i<32; i++)
     {
         T f0 = by*16*16*4+i*16*2+laneid < nblocks*16*16 ? A[by*16*16*4+i*16*2+laneid] : 0;
-        unsigned r0 = __brev(__ballot(f0>0));
+        unsigned r0 = __brev(__ballot_sync(0xFFFFFFFF, f0>0?1:0)); //__brev(__ballot(f0>0));
 
         if (laneid == i) Bval = r0;
     }
@@ -125,7 +124,7 @@ __global__ void ToBit32Col(const T* __restrict__ A, unsigned* B, const int A_hei
     for (int i=0; i<32; i++)
     {
         T f0 = A[by*32*32+i*32+laneid];
-        unsigned r0 = __brev(__ballot(f0>0));
+        unsigned r0 = __brev(__ballot_sync(0xFFFFFFFF, f0>0?1:0)); //__brev(__ballot(f0>0));
         if (laneid == i) Bval = r0;
     }
     B[by*32+laneid] = Bval;
@@ -160,10 +159,10 @@ __global__ void ToBit64Col(const T* __restrict__ A, ullong* B, const int A_heigh
 #pragma unroll
     for (int i=0; i<32; i++)
     {
-        T f0 = A[by*64*64+bx*64*32+i*64+laneid]; //
-        T f1 = A[by*64*64+bx*64*32+i*64+32+laneid]; //
-        unsigned r0 = __ballot(f0>0);
-        unsigned r1 = __ballot(f1>0);
+        T f0 = A[by*64*64+bx*64*32+i*64+laneid];
+        T f1 = A[by*64*64+bx*64*32+i*64+32+laneid];
+        unsigned r0 = __brev(__ballot_sync(0xFFFFFFFF, f0>0?1:0)); //__ballot(f0>0);
+        unsigned r1 = __brev(__ballot_sync(0xFFFFFFFF, f1>0?1:0)); //__ballot(f1>0);
         ullong l0;
         asm volatile("mov.b64 %0, {%1,%2};":"=l"(l0):"r"(r0),"r"(r1)); //lo,hi
         if (laneid == i) Bval = __brevll(l0);
@@ -219,16 +218,16 @@ __global__ void bmv8_sparse(const uchar* __restrict__ A, const uchar* __restrict
 
         // compute 4 blocks on 4 consecutive blockrow at a time
         for(int i=0; i<(int)ceil((float)load/4)*4; i+=4) {
-            uchar a0 = i*8+laneid%8 < load*8 ? Asub[i*8+laneid%8] : 0;
-            uchar a1 = i*8+8+laneid%8 < load*8 ? Asub[i*8+8+laneid%8] : 0;
-            uchar a2 = i*8+16+laneid%8 < load*8 ? Asub[i*8+16+laneid%8] : 0;
-            uchar a3 = i*8+24+laneid%8 < load*8 ? Asub[i*8+24+laneid%8] : 0;
+            uchar a0 = i*8+(laneid%8) < load*8 ? Asub[i*8+(laneid%8)] : 0;
+            uchar a1 = i*8+8+(laneid%8) < load*8 ? Asub[i*8+8+(laneid%8)] : 0;
+            uchar a2 = i*8+16+(laneid%8) < load*8 ? Asub[i*8+16+(laneid%8)] : 0;
+            uchar a3 = i*8+24+(laneid%8) < load*8 ? Asub[i*8+24+(laneid%8)] : 0;
             unsigned r0 = a0 << 24 | a1 << 16 | a2 << 8 | a3;
 
-            uchar b0 = i*8+laneid%8 < load*8 ? Bsub[colind[row_start+i]] : 0;
-            uchar b1 = i*8+8+laneid%8 < load*8 ? Bsub[colind[row_start+i+1]] : 0;
-            uchar b2 = i*8+16+laneid%8 < load*8 ? Bsub[colind[row_start+i+2]] : 0;
-            uchar b3 = i*8+24+laneid%8 < load*8 ? Bsub[colind[row_start+i+3]] : 0;
+            uchar b0 = i*8+(laneid%8) < load*8 ? Bsub[colind[row_start+i]] : 0;
+            uchar b1 = i*8+8+(laneid%8) < load*8 ? Bsub[colind[row_start+i+1]] : 0;
+            uchar b2 = i*8+16+(laneid%8) < load*8 ? Bsub[colind[row_start+i+2]] : 0;
+            uchar b3 = i*8+24+(laneid%8) < load*8 ? Bsub[colind[row_start+i+3]] : 0;
             unsigned r1 = b0 << 24 | b1 << 16 | b2 << 8 | b3;
 
             Cm[0] += __popc(r0 & r1);
@@ -276,12 +275,12 @@ __global__ void bmv16_sparse(const ushort* __restrict__ A, const ushort* __restr
 
         // compute 2 blocks on 2 consecutive blockrow at a time
         for(int i=0; i<(int)ceil((float)load/2)*2; i+=2) {
-            ushort a0 = i*16+laneid%16 < load*16 ? Asub[i*16+laneid%16] : 0;
-            ushort a1 = i*16+16+laneid%16 < load*16 ? Asub[i*16+16+laneid%16] : 0;
+            ushort a0 = i*16+(laneid%16) < load*16 ? Asub[i*16+(laneid%16)] : 0;
+            ushort a1 = i*16+16+(laneid%16) < load*16 ? Asub[i*16+16+(laneid%16)] : 0;
             unsigned r0 = a0 << 16 | a1;
 
-            ushort b0 = i*16+laneid%16 < load*16 ? Bsub[colind[row_start+i]] : 0;
-            ushort b1 = i*16+16+laneid%16 < load*16 ? Bsub[colind[row_start+i+1]] : 0;
+            ushort b0 = i*16+(laneid%16) < load*16 ? Bsub[colind[row_start+i]] : 0;
+            ushort b1 = i*16+16+(laneid%16) < load*16 ? Bsub[colind[row_start+i+1]] : 0;
             unsigned r1 = b0 << 16 | b1;
 
             Cm[0] += __popc(r0 & r1);

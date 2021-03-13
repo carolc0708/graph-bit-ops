@@ -35,7 +35,7 @@ __global__ void ToBit8Col(const T* __restrict__ A, uchar* B, const int nblocks)
     for (int i=0; i<32; i++)
     {
         T f0 = by*8*8*4*4+i*32+laneid < nblocks*8*8 ? A[by*8*8*4*4+i*32+laneid] : 0; // <-- laneid will get consecutive 32 (half-block)
-        unsigned r0 = __brev(__ballot(f0>0));
+        unsigned r0 = __brev(__ballot_sync(0xFFFFFFFF, f0>0?1:0)); //__brev(__ballot(f0>0));
 
         if (laneid == i) Bval = r0;
     }
@@ -80,7 +80,7 @@ __global__ void ToBit16Col(const T* __restrict__ A, ushort* B, const int nblocks
     for (int i=0; i<32; i++)
     {
         T f0 = by*16*16*4+i*16*2+laneid < nblocks*16*16 ? A[by*16*16*4+i*16*2+laneid] : 0;
-        unsigned r0 = __brev(__ballot(f0>0));
+        unsigned r0 = __brev(__ballot_sync(0xFFFFFFFF, f0>0?1:0)); //__brev(__ballot(f0>0));
 
         if (laneid == i) Bval = r0;
     }
@@ -123,7 +123,7 @@ __global__ void ToBit32Col(const T* __restrict__ A, unsigned* B, const int A_hei
     for (int i=0; i<32; i++)
     {
         T f0 = A[by*32*32+i*32+laneid];
-        unsigned r0 = __brev(__ballot(f0>0));
+        unsigned r0 = __brev(__ballot_sync(0xFFFFFFFF, f0>0?1:0));//__brev(__ballot(f0>0));
         if (laneid == i) Bval = r0;
     }
     B[by*32+laneid] = Bval;
@@ -158,8 +158,8 @@ __global__ void ToBit64Col(const T* __restrict__ A, ullong* B, const int A_heigh
     {
         T f0 = A[by*64*64+bx*64*32+i*64+laneid]; //
         T f1 = A[by*64*64+bx*64*32+i*64+32+laneid]; //
-        unsigned r0 = __ballot(f0>0);
-        unsigned r1 = __ballot(f1>0);
+        unsigned r0 = __brev(__ballot_sync(0xFFFFFFFF, f0>0?1:0)); //__ballot(f0>0);
+        unsigned r1 = __brev(__ballot_sync(0xFFFFFFFF, f1>0?1:0)); //__ballot(f1>0);
         ullong l0;
         asm volatile("mov.b64 %0, {%1,%2};":"=l"(l0):"r"(r0),"r"(r1)); //lo,hi
         if (laneid == i) Bval = __brevll(l0);
@@ -222,7 +222,7 @@ __global__ void bmm8_sparse(const uchar* __restrict__ A, const uchar* __restrict
                     #pragma unroll
                     for (int k=0; k<8; k++)
                     {
-                        uchar r2 = __shfl(r1, k+(laneid/8)*8);
+                        uchar r2 = __shfl_sync(0xFFFFFFFF, r1, k+(laneid/8)*8); //__shfl(r1, k+(laneid/8)*8);
                         Cm[k] += __popc(r0 & r2);
                     }
                     /* bmm */
@@ -296,7 +296,7 @@ __global__ void bmm16_sparse(const ushort* __restrict__ A, const ushort* __restr
                     #pragma unroll
                     for (int k=0; k<16; k++)
                     {
-                        ushort r2 = __shfl(r1, k+(laneid/16)*16);
+                        ushort r2 = __shfl_sync(0xFFFFFFFF, r1, k+(laneid/16)*16); //__shfl(r1, k+(laneid/16)*16);
                         Cm[k] += __popc(r0 & r2);
                     }
                     /* bmm */
@@ -359,9 +359,8 @@ __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __r
                 #pragma unroll
                 for (int k=0; k<32; k++)
                 {
-                    unsigned r2 = __shfl(r1, k); //from lane-j, r1 of matrix B
-//                    if (bx*32+laneid < nrows && B_col*32+k < nrows)
-                        Cm[k] += __popc(r0 & r2); // each lane dot-product with the column of B
+                    unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k); //__shfl(r1, k); //from lane-j, r1 of matrix B
+                    Cm[k] += __popc(r0 & r2); // each lane dot-product with the column of B
                 }
                 /* bmm */
 
@@ -423,12 +422,11 @@ __global__ void bmm64_sparse(const ullong* __restrict__ A, const ullong* __restr
                 #pragma unroll
                 for (int k=0; k<32; k++)
                 {
-                    ullong l0 = __shfl(b0,k);
-                    ullong l1 = __shfl(b1,k);
-//                    if (bx*64+laneid < nrows && B_col*64+k < nrows)
-                        Cm[k] += __popcll(a0&l0) + __popcll(a1&l0);
-//                    if (bx*64+laneid < nrows && B_col*64+32+k < nrows)
-                        Cm[32+k] += __popcll(a0&l1) + __popcll(a1&l1);
+                    ullong l0 = __shfl_sync(0xFFFFFFFF, b0, k); //__shfl(b0,k);
+                    ullong l1 = __shfl_sync(0xFFFFFFFF, b1, k); //__shfl(b1,k);
+
+                    Cm[k] += __popcll(a0&l0) + __popcll(a1&l0);
+                    Cm[32+k] += __popcll(a0&l1) + __popcll(a1&l1);
 
                 }
                 /* bmm */
@@ -590,7 +588,7 @@ __global__ void bmm32_sparse_workloadmergeNsplit(const unsigned* __restrict__ A,
                 #pragma unroll
                 for (int k=0; k<32; k++)
                 {
-                    unsigned r2 = __shfl(r1, k); //from lane-j, r1 of matrix B
+                    unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k); //__shfl(r1, k); //from lane-j, r1 of matrix B
                     Cm[k] += __popc(r0 & r2); // each lane dot-product with the column of B
                 }
                 /* bmm */
