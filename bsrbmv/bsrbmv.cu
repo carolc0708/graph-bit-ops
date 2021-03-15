@@ -161,8 +161,11 @@ __global__ void ToBit64Col(const T* __restrict__ A, ullong* B, const int A_heigh
     {
         T f0 = A[by*64*64+bx*64*32+i*64+laneid];
         T f1 = A[by*64*64+bx*64*32+i*64+32+laneid];
-        unsigned r0 = __brev(__ballot_sync(0xFFFFFFFF, f0>0?1:0)); //__ballot(f0>0);
-        unsigned r1 = __brev(__ballot_sync(0xFFFFFFFF, f1>0?1:0)); //__ballot(f1>0);
+        unsigned r0 = __ballot_sync(0xFFFFFFFF, f0>0?1:0);
+        unsigned r1 = __ballot_sync(0xFFFFFFFF, f1>0?1:0);
+
+//        unsigned r0 = __ballot(f0>0);
+//        unsigned r1 = __ballot(f1>0);
         ullong l0;
         asm volatile("mov.b64 %0, {%1,%2};":"=l"(l0):"r"(r0),"r"(r1)); //lo,hi
         if (laneid == i) Bval = __brevll(l0);
@@ -518,6 +521,72 @@ __global__ void bmv8_sparse_merge(const uchar* __restrict__ A, const uchar* __re
 
         } // lid
 
+
+
+#ifdef PROF
+        clock_t stop_time = clock();
+        runtime[bx] = (int)(stop_time - start_time);
+        load[bx] = 0;//(int)(row_end-row_start); <--- temp
+//        GET_LANEID;
+//        if (laneid == 1 && load[bx] == 0) {printf("[%d] %d %d\n", bx, (int)(stop_time - start_time), (int)(row_end-row_start));}
+#endif
+    }
+}
+
+//======================================================================================
+// new model -- more warps in a thread block
+//======================================================================================
+
+template <typename Index, typename T>
+__global__ void bmv8_sparse_new(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
+                            const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                            const Index nblockrows, const Index nblocks, int* runtime, int* load)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < (int)ceil((float)nblockrows/4)) {
+#ifdef PROF
+        clock_t start_time = clock();
+#endif
+
+//        // load vector to shared memory
+//        const int MAXLOAD = 10; // assume 40 at max
+//        __shared__ r1[MAXLOAD];
+//
+
+        // load
+        GET_LANEID;
+
+        int row_start=0, row_end=0, load=0;
+        if(bx*4+laneid/8<nblockrows) {
+            row_start = rowptr[bx*4+laneid/8];
+            row_end = rowptr[bx*4+laneid/8+1];
+            load = row_end-row_start;
+        }
+
+        const uchar* Asub = &(A[row_start*8]);
+        const uchar* Bsub = &(B[0]);
+        T* Csub = &(C[bx*32]);
+        register unsigned Cm[1] = {0};
+
+        // compute 4 blocks on 4 consecutive blockrow at a time
+        for(int i=0; i<(int)ceil((float)load/4)*4; i+=4) {
+            uchar a0 = i*8+(laneid%8) < load*8 ? Asub[i*8+(laneid%8)] : 0;
+            uchar a1 = i*8+8+(laneid%8) < load*8 ? Asub[i*8+8+(laneid%8)] : 0;
+            uchar a2 = i*8+16+(laneid%8) < load*8 ? Asub[i*8+16+(laneid%8)] : 0;
+            uchar a3 = i*8+24+(laneid%8) < load*8 ? Asub[i*8+24+(laneid%8)] : 0;
+            unsigned r0 = a0 << 24 | a1 << 16 | a2 << 8 | a3;
+
+            uchar b0 = i*8+(laneid%8) < load*8 ? Bsub[colind[row_start+i]] : 0;
+            uchar b1 = i*8+8+(laneid%8) < load*8 ? Bsub[colind[row_start+i+1]] : 0;
+            uchar b2 = i*8+16+(laneid%8) < load*8 ? Bsub[colind[row_start+i+2]] : 0;
+            uchar b3 = i*8+24+(laneid%8) < load*8 ? Bsub[colind[row_start+i+3]] : 0;
+            unsigned r1 = b0 << 24 | b1 << 16 | b2 << 8 | b3;
+
+            Cm[0] += __popc(r0 & r1);
+        }
+
+        // store
+        Csub[laneid] += (T)(Cm[0]);
 
 
 #ifdef PROF
