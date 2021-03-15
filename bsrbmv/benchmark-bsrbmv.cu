@@ -155,6 +155,9 @@ int main8(int argc, char* argv[])
     cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
     setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
 
+    int gridDim_new = (int)ceil(cbrt((double)nblockrows/128));
+    dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
+
     int *runtime;
     int *load;
 #ifdef PROF
@@ -171,7 +174,8 @@ int main8(int argc, char* argv[])
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-        bmv8_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
+//        bmv8_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
+        bmv8_sparse_sharedvector<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
     }
 
     bmv_timer.Stop();
@@ -425,6 +429,9 @@ int main16(int argc, char* argv[])
     cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
     setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
 
+    int gridDim_new = (int)ceil(cbrt((double)nblockrows/64));
+    dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
+
     int *runtime;
     int *load;
 #ifdef PROF
@@ -441,7 +448,8 @@ int main16(int argc, char* argv[])
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-        bmv16_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
+        //bmv16_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
+        bmv16_sparse_sharedvector<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
     }
 
     bmv_timer.Stop();
