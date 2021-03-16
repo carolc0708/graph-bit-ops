@@ -158,6 +158,9 @@ int main8(int argc, char* argv[])
     int gridDim_new = (int)ceil(cbrt((double)nblockrows/128));
     dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
 
+    int gridDim_2 = (int)ceil(cbrt((double)nblockrows/8));
+    dim3 grid_2(gridDim_2, gridDim_2, gridDim_2);
+
     int *runtime;
     int *load;
 #ifdef PROF
@@ -174,8 +177,9 @@ int main8(int argc, char* argv[])
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-//        bmv8_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
-        bmv8_sparse_sharedvector<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+        bmv8_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
+//        bmv8_sparse_sharedvector<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+//        bmv8_sparse_twowarp<int, float><<<grid_2, 64>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
     }
 
     bmv_timer.Stop();
@@ -432,6 +436,9 @@ int main16(int argc, char* argv[])
     int gridDim_new = (int)ceil(cbrt((double)nblockrows/64));
     dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
 
+    int gridDim_2 = (int)ceil(cbrt((double)nblockrows/4));
+    dim3 grid_2(gridDim_2, gridDim_2, gridDim_2);
+
     int *runtime;
     int *load;
 #ifdef PROF
@@ -448,8 +455,9 @@ int main16(int argc, char* argv[])
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-        //bmv16_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
-        bmv16_sparse_sharedvector<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+        bmv16_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
+//        bmv16_sparse_sharedvector<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+//        bmv16_sparse_twowarp<int, float><<<grid_2, 64>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
     }
 
     bmv_timer.Stop();
