@@ -161,6 +161,19 @@ int main8(int argc, char* argv[])
     int gridDim_2 = (int)ceil(cbrt((double)nblockrows/8));
     dim3 grid_2(gridDim_2, gridDim_2, gridDim_2);
 
+
+    // memory setting
+    int carveout = 50; // prefer shared memory capacity 50% of maximum
+    // Named Carveout Values:
+    // carveout = cudaSharedmemCarveoutDefault;   //  (-1)
+    // carveout = cudaSharedmemCarveoutMaxL1;     //   (0)
+    // carveout = cudaSharedmemCarveoutMaxShared; // (100)
+    cudaFuncSetAttribute(bmv8_sparse<int, float>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxL1);
+
+//    // for 7.0
+//    int maxbytes = 98304; // 96 KB
+//    cudaFuncSetAttribute(bmv8_sparse<int, float>, cudaFuncAttributeMaxDynamicSharedMemorySize, maxbytes);
+
     int *runtime;
     int *load;
 #ifdef PROF
