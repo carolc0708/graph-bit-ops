@@ -481,6 +481,136 @@ __global__ void bmv8_sparse_sharedvector(const uchar* __restrict__ A, const ucha
     } // bx*128 <= nblockrows
 }
 
+// for better code readability, still use % * /
+// but it can be replace with & << >>
+template <typename Index, typename T>
+__global__ void bmv8_sparse_sharedvectorunsigned(const uchar* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                                        const Index nblockrows, const Index nblocks)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*128 <= nblockrows) {
+
+        // load vector to shared
+        const int unit = 7;
+        const int sharedMemSize = unit * 1024; //64 * 1024; // 96 * 1024; <-- this should be larger than blockrow
+        __shared__ unsigned shared_B[sharedMemSize];
+
+        #pragma unroll
+        for(int i=0; i<unit; i++) {
+            shared_B[tid*unit+i] = tid*unit+i < nblockrows ? B[tid*unit+i] : 0;
+        }
+
+        __syncthreads();
+
+        // compute
+        // we got 32 warp to process 32 * 4 blockrow,
+        // resulting 32*32 rows
+
+        // the below is in a warp
+        GET_LANEID;
+
+        if(bx*128+(tid/32)*4+laneid/8<nblockrows) {
+            int row_start=0, row_end=0, load=0;
+            row_start = rowptr[bx*128+(tid/32)*4+laneid/8];
+            row_end = rowptr[bx*128+(tid/32)*4+laneid/8+1];
+            load = row_end-row_start;
+
+            if (load!= 0) {
+                const uchar* Asub = &(A[row_start*8]);
+                const unsigned* Bsub = &(shared_B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*1024]);
+                register unsigned Cm[1] = {0};
+
+                // compute 4 blocks on 4 consecutive blockrow at a time
+                for(int i=0; i<(int)ceil((float)load/4)*4; i+=4) {
+                    uchar a0 = i*8+(laneid%8) < load*8 ? Asub[i*8+(laneid%8)] : 0;
+                    uchar a1 = i*8+8+(laneid%8) < load*8 ? Asub[i*8+8+(laneid%8)] : 0;
+                    uchar a2 = i*8+16+(laneid%8) < load*8 ? Asub[i*8+16+(laneid%8)] : 0;
+                    uchar a3 = i*8+24+(laneid%8) < load*8 ? Asub[i*8+24+(laneid%8)] : 0;
+                    unsigned r0 = a0 << 24 | a1 << 16 | a2 << 8 | a3;
+
+                    uchar b0 = i*8+(laneid%8) < load*8 ? (((0xFF000000 >> ((colindsub[i]%4)*8)) & Bsub[colindsub[i]/4]) >> (24 - ((colindsub[i]%4)*8))) : 0;
+                    uchar b1 = i*8+8+(laneid%8) < load*8 ? (((0xFF000000 >> ((colindsub[i+1]%4)*8)) & Bsub[colindsub[i+1]/4]) >> (24 - ((colindsub[i+1]%4)*8))) : 0;
+                    uchar b2 = i*8+16+(laneid%8) < load*8 ? (((0xFF000000 >> ((colindsub[i+2]%4)*8)) & Bsub[colindsub[i+2]/4]) >> (24 - ((colindsub[i+2]%4)*8))) : 0;
+                    uchar b3 = i*8+24+(laneid%8) < load*8 ? (((0xFF000000 >> ((colindsub[i+3]%4)*8)) & Bsub[colindsub[i+3]/4]) >> (24 - ((colindsub[i+3]%4)*8))) : 0;
+                    unsigned r1 = b0 << 24 | b1 << 16 | b2 << 8 | b3;
+
+                    Cm[0] += __popc(r0 & r1);
+                }
+
+                // store
+                Csub[tid] += (T)(Cm[0]);
+            } // load != 0
+        } // tid... <nblockrows
+    } // bx*128 <= nblockrows
+}
+
+template <typename Index, typename T>
+__global__ void bmv8_sparse_sharedallunsigned(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                                        const Index nblockrows, const Index nblocks)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*128 <= nblockrows) {
+
+        // load vector to shared
+        const int unit = 7;
+        const int sharedMemSize = unit * 1024; //64 * 1024; // 96 * 1024; <-- this should be larger than blockrow
+        __shared__ unsigned shared_B[sharedMemSize];
+
+        #pragma unroll
+        for(int i=0; i<unit; i++) {
+            shared_B[tid*unit+i] = tid*unit+i < nblockrows ? B[tid*unit+i] : 0;
+        }
+
+        __syncthreads();
+
+        // compute
+        // we got 32 warp to process 32 * 4 blockrow,
+        // resulting 32*32 rows
+
+        // the below is in a warp
+        GET_LANEID;
+
+        if(bx*128+(tid/32)*4+laneid/8<nblockrows) {
+            int row_start=0, row_end=0, load=0;
+            row_start = rowptr[bx*128+(tid/32)*4+laneid/8];
+            row_end = rowptr[bx*128+(tid/32)*4+laneid/8+1];
+            load = row_end-row_start; // <- become 4 aligned
+
+            if (load != 0) {
+                const unsigned* Asub = &(A[(row_start/4)*8]);
+                const unsigned* Bsub = &(shared_B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*1024]);
+                register unsigned Cm[1] = {0};
+
+                // compute 4 blocks on 4 consecutive blockrow at a time
+                for(int i=0; i<load; i+=4) {
+                    unsigned r0 = Asub[(i/4)*8+(laneid%8)];
+
+                    uchar b0 = (((0xFF000000 >> ((colindsub[i]%4)*8)) & Bsub[colindsub[i]/4]) >> (24 - ((colindsub[i]%4)*8)));
+                    uchar b1 = (((0xFF000000 >> ((colindsub[i+1]%4)*8)) & Bsub[colindsub[i+1]/4]) >> (24 - ((colindsub[i+1]%4)*8)));
+                    uchar b2 = (((0xFF000000 >> ((colindsub[i+2]%4)*8)) & Bsub[colindsub[i+2]/4]) >> (24 - ((colindsub[i+2]%4)*8)));
+                    uchar b3 = (((0xFF000000 >> ((colindsub[i+3]%4)*8)) & Bsub[colindsub[i+3]/4]) >> (24 - ((colindsub[i+3]%4)*8)));
+                    unsigned r1 = b0 << 24 | b1 << 16 | b2 << 8 | b3;
+
+                    Cm[0] += __popc(r0 & r1);
+                }
+
+                // store
+                Csub[tid] += (T)(Cm[0]);
+            } // load != 0
+        } // tid... <nblockrows
+    } // bx*128 <= nblockrows
+}
+
 template <typename Index, typename T>
 __global__ void bmv8_sparse_twowarp(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
                                     const Index* __restrict__ rowptr, const Index* __restrict__ colind,

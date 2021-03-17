@@ -167,6 +167,66 @@ void csr2bsr_batch_8(const int* h_csrRowPtr, const int* h_csrColInd,
 }
 
 /**
+* size estimation before
+* convert 8-bin packed bsrval to aligned unsigned blocks
+* every 8x8x4 uchar -> 8x1 unsigned
+*/
+__global__ void countUnsignedSize(const int* bsrRowPtr, const int nblockrows, int* count) {
+
+    int cnt = 0, temp_nblocks = 0;
+    for (int row=0; row<nblockrows; row++) {
+        temp_nblocks = bsrRowPtr[row+1] - bsrRowPtr[row];
+        cnt += (int)ceil((float)temp_nblocks/4) * 8;
+    }
+
+    count[0] = cnt;
+
+#ifdef DEBUG
+    printf("[countUnsignedSize] result total blocks = %d (8 * %d)\n", cnt, cnt/8);
+#endif
+}
+
+/**
+* convert 8-bin packed bsrval to aligned unsigned blocks
+* every 8x8x4 uchar -> 8x1 unsigned
+*/
+__global__ void packUchar2AlignedUnsigned(const int* bsrRowPtr, const int* bsrColInd, uchar* bsrval_packed, const int nblockrows,
+                                          int* new_bsrrowptr, int* new_bsrcolind, unsigned* new_bsrval_packed) {
+    // [uchar0 uchar1 ... uchar7] , [uchar8 uchar9 ... uchar15] , [uchar16 uchar17 ... uchar23] ...
+    // become [(uchar0, uchar8, uchar16, uchar24) => unsigned, ...]
+    // every 8x8x4 uchar -> 8x1 unsigned
+    new_bsrrowptr[0] = 0;
+
+    int cnt = 0, temp_nblocks = 0, row_start = 0;
+    int colcnt = 0;
+    for (int row=0; row<nblockrows; row++) {
+        temp_nblocks = bsrRowPtr[row+1] - bsrRowPtr[row];
+        row_start = bsrRowPtr[row];
+        for(int i=0; i<(int)ceil((float)temp_nblocks/4)*4; i+=4) {
+            for(int j=0; j<8; j++) {
+                uchar a0 = i*8+j < temp_nblocks*8 ? bsrval_packed[row_start*8+i*8+j] : 0;
+                uchar a1 = i*8+8+j < temp_nblocks*8 ? bsrval_packed[row_start*8+i*8+8+j] : 0;
+                uchar a2 = i*8+16+j < temp_nblocks*8 ? bsrval_packed[row_start*8+i*8+16+j] : 0;
+                uchar a3 = i*8+24+j < temp_nblocks*8 ? bsrval_packed[row_start*8+i*8+24+j] : 0;
+                unsigned r0 = a0 << 24 | a1 << 16 | a2 << 8 | a3;
+                new_bsrval_packed[cnt++] = r0;
+            }
+        }
+
+        for(int i=bsrRowPtr[row]; i<bsrRowPtr[row]+temp_nblocks; i++) new_bsrcolind[colcnt++] = bsrColInd[i];
+        for(int i=0; i<(int)ceil((float)temp_nblocks/4)*4-temp_nblocks; i++) new_bsrcolind[colcnt++] = 0;
+
+        new_bsrrowptr[row+1] = new_bsrrowptr[row] + (int)ceil((float)temp_nblocks/4)*4;
+//        printf("row:%d, bsrRowPtr[row]:%d, bsrRowPtr[row+1]:%d\n", row, bsrRowPtr[row], bsrRowPtr[row+1]);
+//        printf("row:%d, new_bsrrowptr[row]:%d, new_bsrrowptr[row+1]:%d\n", row, new_bsrrowptr[row], new_bsrrowptr[row+1]);
+    }
+
+#ifdef DEBUG
+    printf("[PackUchar2AlignedUnsigned] result total unsigned = %d (8 * %d), colind size = %d (4 * %d)\n", cnt, cnt/8, colcnt, colcnt/4);
+#endif
+}
+
+/**
 * batch the process of csr2bsr, blocksize = 16
 * assume csr val are only 0 or 1
 */
@@ -330,6 +390,12 @@ void csr2bsr_batch_16(const int* h_csrRowPtr, const int* h_csrColInd,
     printGlobalBSRBlock16<<<1,1>>>(bsrVal, blocksize, nblocks);
 #endif
 }
+
+/**
+* batch the process of csr2bsr, blocksize = 16
+* assume csr val are only 0 or 1
+* pad block in a row to be 2-aligned and store as unsigned
+*/
 
 /**
 * batch the process of csr2bsr, blocksize = 32
