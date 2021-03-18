@@ -92,24 +92,9 @@ int main8(int argc, char* argv[])
     uchar* tA;
     cudaMalloc((void**)&tA, ceil((float)nblocks/16) * 16 * blocksize * sizeof(uchar));
 
-#ifdef NONBATCH
-    // for small matrices: csr2bsr directly
-    cudaMalloc((void**)&bsrVal, sizeof(float)*(blocksize*blocksize)*nblocks);
-    cusparseScsr2bsr(handle, dirA, nrows, ncols, csr_descr, csrVal,
-                csrRowPtr, csrColInd, blocksize, bsr_descr, bsrVal, bsrRowPtr, bsrColInd);
-
-    // pack A
-    ToBit8Col<float><<<dim3(1, ceil((float)temp_nblocks/16)), 32>>>(bsrVal, tA, nblocks); // sparse matrix
-    //printGlobalBSRBlock8<<<1,1>>>(tA, blocksize, nblocks);
-
-    // free memory
-    cudaFree(bsrVal);
-#else
     // use batch transform as default
     csr2bsr_batch_8(h_csrRowPtr, h_csrColInd, nrows, ncols, nnz,
                      bsrRowPtr, bsrColInd, tA, blocksize, nblockrows, nblocks);
-//    printGlobalBSRBlock8<<<1,1>>>(tA, blocksize, 5);
-#endif
 
     // ============================================= input vector storage
     // generate random vector
@@ -131,25 +116,6 @@ int main8(int argc, char* argv[])
 	float *fB;
 	cudaMalloc(&fB, (nblockrows * blocksize) * 1 * sizeof(float));
 	cudaMemcpy(fB, B, (nblockrows * blocksize) * 1 * sizeof(float), cudaMemcpyHostToDevice);
-
-    // pack B
-    uchar *tB;
-    cudaMalloc(&tB, ceil((float)nblockrows/4)* 4 * sizeof(uchar));
-    setDeviceValArr<int, uchar><<<1,1>>>(tB, ceil((float)nblockrows/4)*4, 0);
-
-    // get gridDim, this is to avoid nblockrows being larger than MAX_gridDim (65535?!)
-    int gridDim = (int)ceil(cbrt((double)nblockrows/4));
-    dim3 grid(gridDim, gridDim, gridDim);
-
-#ifdef VERBOSE
-    printf("ceil(nblockrows/4) = %d, cbrt(nblockrows/4) = %d\n", (int)ceil((double)nblockrows/4), gridDim);
-#endif
-
-//    printf("nrows = %d\n", nrows);
-//    printf("8-aligned nrows = nblockrows * 8 = %d\n", nblockrows * 8);
-//    ToBit8Row<float><<<grid, 32>>>(fB, tB, nblockrows); // dense vector
-////    printf("binarized vec: \n"); printBin8Vec<<<1,1>>>(tB, nblockrows);
-
 
     // pack B into unsigned
     printf("32-aligned nrows = %d (32 * %d)\n", ((nrows + 32-1)/32) * 32, ((nrows + 32-1)/32));
@@ -184,7 +150,6 @@ int main8(int argc, char* argv[])
 //    printResVec<<<1,1>>>(bsrColInd_unsigned, nblocks_unsigned/8*4);
 
     cudaFree(tA);
-    cudaFree(tB);
     cudaFree(bsrRowPtr);
     cudaFree(bsrColInd);
 
@@ -196,9 +161,6 @@ int main8(int argc, char* argv[])
 
     int gridDim_new = (int)ceil(cbrt((double)nblockrows/128));
     dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
-
-    int gridDim_2 = (int)ceil(cbrt((double)nblockrows/8));
-    dim3 grid_2(gridDim_2, gridDim_2, gridDim_2);
 
 
     // memory setting
@@ -213,15 +175,6 @@ int main8(int argc, char* argv[])
 //    int maxbytes = 98304; // 96 KB
 //    cudaFuncSetAttribute(bmv8_sparse_sharedvector<int, float>, cudaFuncAttributeMaxDynamicSharedMemorySize, maxbytes);
 
-    int *runtime;
-    int *load;
-#ifdef PROF
-    cudaMalloc(&runtime, nblockrows * sizeof(int));
-    setDeviceValArr<int, int><<<1,1>>>(runtime, nblockrows, 0);
-
-    cudaMalloc(&load, nblockrows * sizeof(int));
-    setDeviceValArr<int, int><<<1,1>>>(load, nblockrows, 0);
-#endif
 
     // ------
     GpuTimer bmv_timer;
@@ -241,14 +194,6 @@ int main8(int argc, char* argv[])
     bmv_timer.Stop();
     double bmv8_time = bmv_timer.ElapsedMillis()/double(TEST_TIMES);
     // ------
-#ifdef PROF
-    printTimenLoadReport<<<1,1>>>(runtime, load, nblockrows); cudaFree(runtime); cudaFree(load);
-#endif
-
-
-    // free storage
-//    cudaFree(tA);
-//    cudaFree(tB);
 
     // copy result to host for verification
     float* result_bsrbmv8 = (float*)malloc(nrows * 1 * sizeof(float)); // don't care padding result
@@ -426,24 +371,9 @@ int main16(int argc, char* argv[])
     ushort* tA;
     cudaMalloc((void**)&tA, ceil((float)nblocks/4) * 4 * blocksize * sizeof(ushort)); // <--
 
-#ifdef NONBATCH
-    // for small matrices: csr2bsr directly
-    cudaMalloc((void**)&bsrVal, sizeof(float)*(blocksize*blocksize)*nblocks);
-    cusparseScsr2bsr(handle, dirA, nrows, ncols, csr_descr, csrVal,
-                csrRowPtr, csrColInd, blocksize, bsr_descr, bsrVal, bsrRowPtr, bsrColInd);
-
-    // pack A
-    ToBit16Col<float><<<dim3(1, ceil((float)temp_nblocks/4)), 32>>>(bsrVal, tA, nblocks); // sparse matrix
-    //printGlobalBSRBlock16<<<1,1>>>(tA, blocksize, nblocks);
-
-    // free memory
-    cudaFree(bsrVal);
-#else
     // use batch transform as default
     csr2bsr_batch_16(h_csrRowPtr, h_csrColInd, nrows, ncols, nnz,
                      bsrRowPtr, bsrColInd, tA, blocksize, nblockrows, nblocks);
-//    printGlobalBSRBlock16<<<1,1>>>(tA, blocksize, 5);
-#endif
 
     // ============================================= input vector storage
     // generate random vector
@@ -465,23 +395,6 @@ int main16(int argc, char* argv[])
 	float *fB;
 	cudaMalloc(&fB, (nblockrows * blocksize) * 1 * sizeof(float));
 	cudaMemcpy(fB, B, (nblockrows * blocksize) * 1 * sizeof(float), cudaMemcpyHostToDevice);
-
-    // pack B
-    ushort *tB;
-    cudaMalloc(&tB, ceil((float)nblockrows/2)* 2 * sizeof(ushort));
-    setDeviceValArr<int, ushort><<<1,1>>>(tB, ceil((float)nblockrows/2)*2, 0);
-
-    // get gridDim, this is to avoid nblockrows being larger than MAX_gridDim (65535?!)
-    int gridDim = (int)ceil(cbrt((double)nblockrows/2));
-    dim3 grid(gridDim, gridDim, gridDim);
-
-#ifdef VERBOSE
-    printf("ceil(nblockrows/2) = %d, cbrt(nblockrows/2) = %d\n", (int)ceil((double)nblockrows/2), gridDim);
-#endif
-
-//    ToBit16Row<float><<<grid, 32>>>(fB, tB, nblockrows); // dense vector
-//    printf("binarized vec: \n"); printBin16Vec<<<1,1>>>(tB, nblockrows);
-
 
     // pack B into unsigned
     printf("32-aligned nrows = %d (32 * %d)\n", ((nrows + 32-1)/32) * 32, ((nrows + 32-1)/32));
@@ -518,9 +431,6 @@ int main16(int argc, char* argv[])
     cudaFree(bsrRowPtr);
     cudaFree(bsrColInd);
 
-//int k;
-//std::cin >> k;
-
     // ============================================= BSTC-16 bsr bmv
     // init C (result storage)
     float *fC;
@@ -530,18 +440,6 @@ int main16(int argc, char* argv[])
     int gridDim_new = (int)ceil(cbrt((double)nblockrows/64));
     dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
 
-    int gridDim_2 = (int)ceil(cbrt((double)nblockrows/4));
-    dim3 grid_2(gridDim_2, gridDim_2, gridDim_2);
-
-    int *runtime;
-    int *load;
-#ifdef PROF
-    cudaMalloc(&runtime, nblockrows * sizeof(int));
-    setDeviceValArr<int, int><<<1,1>>>(runtime, nblockrows, 0);
-
-    cudaMalloc(&load, nblockrows * sizeof(int));
-    setDeviceValArr<int, int><<<1,1>>>(load, nblockrows, 0);
-#endif
 
     // ------
     GpuTimer bmv_timer;
@@ -559,14 +457,6 @@ int main16(int argc, char* argv[])
     bmv_timer.Stop();
     double bmv16_time = bmv_timer.ElapsedMillis()/double(TEST_TIMES);
     // ------
-#ifdef PROF
-    printTimenLoadReport<<<1,1>>>(runtime, load, nblockrows); cudaFree(runtime); cudaFree(load);
-#endif
-
-
-    // free storage
-//    cudaFree(tA);
-    cudaFree(tB);
 
     // copy result to host for verification
     float* result_bsrbmv16 = (float*)malloc(nrows * 1 * sizeof(float)); // don't care padding result
