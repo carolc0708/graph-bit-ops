@@ -1,7 +1,7 @@
 #include <iostream>
 #include <sys/time.h>
 
-#define TEST_TIMES 5
+#define TEST_TIMES 1
 using namespace std;
 
 #include <cuda.h>
@@ -117,8 +117,27 @@ int main8(int argc, char* argv[])
 	cudaMalloc(&fB, (nblockrows * blocksize) * 1 * sizeof(float));
 	cudaMemcpy(fB, B, (nblockrows * blocksize) * 1 * sizeof(float), cudaMemcpyHostToDevice);
 
+    // pack B
+    uchar *tB;
+    cudaMalloc(&tB, ceil((float)nblockrows/4)* 4 * sizeof(uchar));
+    setDeviceValArr<int, uchar><<<1,1>>>(tB, ceil((float)nblockrows/4)*4, 0);
+
+    // get gridDim, this is to avoid nblockrows being larger than MAX_gridDim (65535?!)
+    int gridDim = (int)ceil(cbrt((double)nblockrows/4));
+    dim3 grid(gridDim, gridDim, gridDim);
+
+#ifdef VERBOSE
+    printf("ceil(nblockrows/4) = %d, cbrt(nblockrows/4) = %d\n", (int)ceil((double)nblockrows/4), gridDim);
+    printf("nrows = %d\n", nrows);
+    printf("8-aligned nrows = nblockrows * 8 = %d\n", nblockrows * 8);
+#endif
+
+    ToBit8Row<float><<<grid, 32>>>(fB, tB, nblockrows); // dense vector
+//    printf("binarized vec: \n"); printBin8Vec<<<1,1>>>(tB, nblockrows);
+
+#ifdef ALLUNSIGNED
     // pack B into unsigned
-    printf("32-aligned nrows = %d (32 * %d)\n", ((nrows + 32-1)/32) * 32, ((nrows + 32-1)/32));
+//    printf("32-aligned nrows = %d (32 * %d)\n", ((nrows + 32-1)/32) * 32, ((nrows + 32-1)/32));
     unsigned* tB_unsigned;
     cudaMalloc(&tB_unsigned, ((nrows + 32-1)/32) * sizeof(unsigned));
     setDeviceValArr<int, unsigned><<<1,1>>>(tB_unsigned, ((nrows + 32-1)/32), 0);
@@ -133,7 +152,7 @@ int main8(int argc, char* argv[])
     countUcharUnsignedSize<<<1,1>>>(bsrRowPtr, nblockrows, nblocks_unsigned_ptr);
     int nblocks_unsigned;
     cudaMemcpy(&nblocks_unsigned, nblocks_unsigned_ptr, 1 * sizeof(int), cudaMemcpyDeviceToHost);
-    printf("nblocks_unsigned: %d (8 * %d)\n", nblocks_unsigned, nblocks_unsigned/8);
+//    printf("nblocks_unsigned: %d (8 * %d)\n", nblocks_unsigned, nblocks_unsigned/8);
     unsigned* tA_unsigned;
     cudaMalloc(&tA_unsigned, nblocks_unsigned * sizeof(unsigned));
     setDeviceValArr<int, unsigned><<<1,1>>>(tA_unsigned, nblocks_unsigned, 0);
@@ -150,8 +169,14 @@ int main8(int argc, char* argv[])
 //    printResVec<<<1,1>>>(bsrColInd_unsigned, nblocks_unsigned/8*4);
 
     cudaFree(tA);
+    cudaFree(tB);
     cudaFree(bsrRowPtr);
     cudaFree(bsrColInd);
+
+    printf("num of unsinged blocks (8*4 uchar, 8*1 unsigned): %d, nnzb: %d\n", (nblocks_unsigned/8), (nblocks_unsigned/8) * 4);
+    bytes = ((nblocks_unsigned + (nblockrows+1+(nblocks_unsigned/8) * 4)) * 4);
+    printf("unsigned-bsr total size: "); printBytes(bytes); printf("\n");
+#endif
 
     // ============================================= BSTC-8 bsr bmv
     // init C (result storage)
@@ -162,19 +187,22 @@ int main8(int argc, char* argv[])
     int gridDim_new = (int)ceil(cbrt((double)nblockrows/128));
     dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
 
+    int gridDim_2 = (int)ceil(cbrt((double)nblockrows/8));
+    dim3 grid_2(gridDim_2, gridDim_2, gridDim_2);
 
+#ifdef SHARED
     // memory setting
 //    int carveout = 50; // prefer shared memory capacity 50% of maximum
     // Named Carveout Values:
     // carveout = cudaSharedmemCarveoutDefault;   //  (-1)
     // carveout = cudaSharedmemCarveoutMaxL1;     //   (0)
     // carveout = cudaSharedmemCarveoutMaxShared; // (100)
-//    cudaFuncSetAttribute(bmv8_sparse_sharedcolind<int, float>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+//    cudaFuncSetAttribute(bmv8_sparse_sharedallunsigned<int, float>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
 
 //    // for 7.0
 //    int maxbytes = 98304; // 96 KB
-//    cudaFuncSetAttribute(bmv8_sparse_sharedvector<int, float>, cudaFuncAttributeMaxDynamicSharedMemorySize, maxbytes);
-
+//    cudaFuncSetAttribute(bmv8_sparse_sharedallunsigned<int, float>, cudaFuncAttributeMaxDynamicSharedMemorySize, maxbytes);
+#endif
 
     // ------
     GpuTimer bmv_timer;
@@ -182,18 +210,31 @@ int main8(int argc, char* argv[])
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-//        bmv8_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
 //        bmv8_sparse_sharedvector<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
 //        bmv8_sparse_twowarp<int, float><<<grid_2, 64>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
 //        bmv8_sparse_sharedvectorunsigned<int, float><<<grid_new, 1024>>>(tA, tB_unsigned, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#if defined(SHARED)
         bmv8_sparse_sharedallunsigned<int, float><<<grid_new, 1024>>>(tA_unsigned, tB_unsigned, fC, bsrRowPtr_unsigned, bsrColInd_unsigned, nblockrows, nblocks);
-
-//        bmv8_sparse_allunsigned<int, float><<<grid_new, 1024>>>(tA_unsigned, tB_unsigned, fC, bsrRowPtr_unsigned, bsrColInd_unsigned, nblockrows, nblocks);
+#elif defined(ALLUNSIGNED)
+        bmv8_sparse_allunsigned<int, float><<<grid_new, 1024>>>(tA_unsigned, tB_unsigned, fC, bsrRowPtr_unsigned, bsrColInd_unsigned, nblockrows, nblocks);
+#elif defined(NEW)
+        bmv8_sparse_new<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#else
+        bmv8_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#endif
+//        bmv8_sparse_new2<int, float><<<grid_new, 1024>>>(tA, tB_unsigned, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
     }
 
     bmv_timer.Stop();
     double bmv8_time = bmv_timer.ElapsedMillis()/double(TEST_TIMES);
     // ------
+
+
+    // free storage
+#if !defined(ALLUNSIGNED)
+    cudaFree(tA);
+    cudaFree(tB);
+#endif
 
     // copy result to host for verification
     float* result_bsrbmv8 = (float*)malloc(nrows * 1 * sizeof(float)); // don't care padding result
@@ -261,6 +302,7 @@ int main8(int argc, char* argv[])
     // print time
     printf("BSR BMV-8: %.3lf\n", bmv8_time);
     printf("CuSPARSE CSR SpMV-float: %.3lf\n", cusparsecsrspmvfloat_time);
+    printf("speedup: %.3lf\n", cusparsecsrspmvfloat_time/bmv8_time);
 
     //============================================= free memory
     // free cusparse bsr metadata
@@ -396,8 +438,25 @@ int main16(int argc, char* argv[])
 	cudaMalloc(&fB, (nblockrows * blocksize) * 1 * sizeof(float));
 	cudaMemcpy(fB, B, (nblockrows * blocksize) * 1 * sizeof(float), cudaMemcpyHostToDevice);
 
+    // pack B
+    ushort *tB;
+    cudaMalloc(&tB, ceil((float)nblockrows/2)* 2 * sizeof(ushort));
+    setDeviceValArr<int, ushort><<<1,1>>>(tB, ceil((float)nblockrows/2)*2, 0);
+
+    // get gridDim, this is to avoid nblockrows being larger than MAX_gridDim (65535?!)
+    int gridDim = (int)ceil(cbrt((double)nblockrows/2));
+    dim3 grid(gridDim, gridDim, gridDim);
+
+#ifdef VERBOSE
+    printf("ceil(nblockrows/2) = %d, cbrt(nblockrows/2) = %d\n", (int)ceil((double)nblockrows/2), gridDim);
+#endif
+
+    ToBit16Row<float><<<grid, 32>>>(fB, tB, nblockrows); // dense vector
+//    printf("binarized vec: \n"); printBin16Vec<<<1,1>>>(tB, nblockrows);
+
+#ifdef ALLUNSIGNED
     // pack B into unsigned
-    printf("32-aligned nrows = %d (32 * %d)\n", ((nrows + 32-1)/32) * 32, ((nrows + 32-1)/32));
+//    printf("32-aligned nrows = %d (32 * %d)\n", ((nrows + 32-1)/32) * 32, ((nrows + 32-1)/32));
     unsigned* tB_unsigned;
     cudaMalloc(&tB_unsigned, ((nrows + 32-1)/32) * sizeof(unsigned));
     setDeviceValArr<int, unsigned><<<1,1>>>(tB_unsigned, ((nrows + 32-1)/32), 0);
@@ -412,7 +471,7 @@ int main16(int argc, char* argv[])
     countUshortUnsignedSize<<<1,1>>>(bsrRowPtr, nblockrows, nblocks_unsigned_ptr);
     int nblocks_unsigned;
     cudaMemcpy(&nblocks_unsigned, nblocks_unsigned_ptr, 1 * sizeof(int), cudaMemcpyDeviceToHost);
-    printf("nblocks_unsigned: %d (16 * %d)\n", nblocks_unsigned, nblocks_unsigned/16);
+//    printf("nblocks_unsigned: %d (16 * %d)\n", nblocks_unsigned, nblocks_unsigned/16);
     unsigned* tA_unsigned;
     cudaMalloc(&tA_unsigned, nblocks_unsigned * sizeof(unsigned));
     setDeviceValArr<int, unsigned><<<1,1>>>(tA_unsigned, nblocks_unsigned, 0);
@@ -428,8 +487,14 @@ int main16(int argc, char* argv[])
 //    printResVec<<<1,1>>>(bsrRowPtr_unsigned, nblockrows);
 //    printResVec<<<1,1>>>(bsrColInd_unsigned, nblocks_unsigned/16*2);
     cudaFree(tA);
+    cudaFree(tB);
     cudaFree(bsrRowPtr);
     cudaFree(bsrColInd);
+
+    printf("num of unsinged blocks (16*2 ushort, 16*1 unsigned): %d, nnzb: %d\n", (nblocks_unsigned/16), (nblocks_unsigned/16) * 2);
+    bytes = ((nblocks_unsigned + (nblockrows+1+(nblocks_unsigned/16) * 2)) * 4);
+    printf("unsigned-bsr total size: "); printBytes(bytes); printf("\n");
+#endif
 
     // ============================================= BSTC-16 bsr bmv
     // init C (result storage)
@@ -440,6 +505,8 @@ int main16(int argc, char* argv[])
     int gridDim_new = (int)ceil(cbrt((double)nblockrows/64));
     dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
 
+    int gridDim_2 = (int)ceil(cbrt((double)nblockrows/4));
+    dim3 grid_2(gridDim_2, gridDim_2, gridDim_2);
 
     // ------
     GpuTimer bmv_timer;
@@ -447,16 +514,29 @@ int main16(int argc, char* argv[])
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-//        bmv16_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
 //        bmv16_sparse_sharedvector<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
 //        bmv16_sparse_twowarp<int, float><<<grid_2, 64>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#if defined(SHARED)
         bmv16_sparse_sharedallunsigned<int, float><<<grid_new, 1024>>>(tA_unsigned, tB_unsigned, fC, bsrRowPtr_unsigned, bsrColInd_unsigned, nblockrows, nblocks);
-
+#elif defined(ALLUNSIGNED)
+        bmv16_sparse_allunsigned<int, float><<<grid_new, 1024>>>(tA_unsigned, tB_unsigned, fC, bsrRowPtr_unsigned, bsrColInd_unsigned, nblockrows, nblocks);
+#elif defined(NEW)
+        bmv16_sparse_new<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#else
+        bmv16_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#endif
     }
 
     bmv_timer.Stop();
     double bmv16_time = bmv_timer.ElapsedMillis()/double(TEST_TIMES);
     // ------
+
+
+#if !defined(ALLUNSIGNED)
+    // free storage
+    cudaFree(tA);
+    cudaFree(tB);
+#endif
 
     // copy result to host for verification
     float* result_bsrbmv16 = (float*)malloc(nrows * 1 * sizeof(float)); // don't care padding result
@@ -524,6 +604,7 @@ int main16(int argc, char* argv[])
     // print time
     printf("BSR BMV-16: %.3lf\n", bmv16_time);
     printf("CuSPARSE CSR SpMV-float: %.3lf\n", cusparsecsrspmvfloat_time);
+    printf("speedup: %.3lf\n", cusparsecsrspmvfloat_time/bmv16_time);
 
     //============================================= free memory
     // free cusparse bsr metadata
@@ -634,23 +715,9 @@ int main32(int argc, char* argv[])
     unsigned* tA;
     cudaMalloc((void**)&tA, nblocks * blocksize * sizeof(unsigned));
 
-#ifdef NONBATCH
-    // for small matrices: csr2bsr directly
-    cudaMalloc((void**)&bsrVal, sizeof(float)*(blocksize*blocksize)*nblocks);
-    cusparseScsr2bsr(handle, dirA, nrows, ncols, csr_descr, csrVal,
-                csrRowPtr, csrColInd, blocksize, bsr_descr, bsrVal, bsrRowPtr, bsrColInd);
-
-    // pack A
-    ToBit32Col<float><<<dim3(1, nblocks), 32>>>(bsrVal, tA, blocksize, nblocks * blocksize); // sparse matrix
-//    printGlobalBSRBlock32<<<1,1>>>(tA, blocksize, nblocks);
-
-    // free memory
-    cudaFree(bsrVal);
-#else
     // use batch transform as default
     csr2bsr_batch_32(h_csrRowPtr, h_csrColInd, nrows, ncols, nnz,
                      bsrRowPtr, bsrColInd, tA, blocksize, nblockrows, nblocks);
-#endif
 
     // ============================================= input vector storage
     // generate random vector
@@ -694,15 +761,8 @@ int main32(int argc, char* argv[])
     cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
     setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
 
-    int *runtime;
-    int *load;
-#ifdef PROF
-    cudaMalloc(&runtime, nblockrows * sizeof(int));
-    setDeviceValArr<int, int><<<1,1>>>(runtime, nblockrows, 0);
-
-    cudaMalloc(&load, nblockrows * sizeof(int));
-    setDeviceValArr<int, int><<<1,1>>>(load, nblockrows, 0);
-#endif
+    int gridDim_new = (int)ceil(cbrt((double)nblockrows/32));
+    dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
 
     // ------
     GpuTimer bmv_timer;
@@ -710,15 +770,18 @@ int main32(int argc, char* argv[])
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-        bmv32_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime, load);
+#if defined (SHARED)
+        bmv32_sparse_sharedvector<int, float><<<grid_new, 1024>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#elif defined(NEW)
+        bmv32_sparse_new<int, float><<<grid_new, 1024>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#else
+        bmv32_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#endif
     }
 
     bmv_timer.Stop();
     double bmv32_time = bmv_timer.ElapsedMillis()/double(TEST_TIMES);
     // ------
-#ifdef PROF
-    printTimenLoadReport<<<1,1>>>(runtime, load, nblockrows); cudaFree(runtime); cudaFree(load);
-#endif
 
 
     // free storage
@@ -791,6 +854,7 @@ int main32(int argc, char* argv[])
     // print time
     printf("BSR BMV-32: %.3lf\n", bmv32_time);
     printf("CuSPARSE CSR SpMV-float: %.3lf\n", cusparsecsrspmvfloat_time);
+    printf("speedup: %.3lf\n", cusparsecsrspmvfloat_time/bmv32_time);
 
     //============================================= free memory
     // free cusparse bsr metadata
@@ -963,11 +1027,8 @@ int main64(int argc, char* argv[])
     cudaMalloc(&fC, (nblockrows * blocksize) * 1 * sizeof(float));
     setDeviceValArr<int, float><<<1,1>>>(fC, nblockrows * blocksize, 0);
 
-    int *runtime;
-#ifdef PROF
-    cudaMalloc(&runtime, nblockrows * sizeof(int));
-    setDeviceValArr<int, int><<<1,1>>>(runtime, nblockrows, 0);
-#endif
+    int gridDim_new = (int)ceil(cbrt((double)nblockrows/32));
+    dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
 
     // ------
 
@@ -976,17 +1037,19 @@ int main64(int argc, char* argv[])
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-        bmv64_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks, runtime);
+#if defined(SHARED)
+        bmv64_sparse_sharedvector<int, float><<<grid_new, 1024>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#elif defined(NEW)
+        bmv64_sparse_new<int, float><<<grid_new, 1024>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#else
+        bmv64_sparse<int, float><<<grid, 32>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+#endif
     }
 
     bmv_timer.Stop();
     double bmv64_time = bmv_timer.ElapsedMillis()/double(TEST_TIMES);
 
     // ------
-
-#ifdef PROF
-    printTimeReport<<<1,1>>>(runtime, nblockrows); cudaFree(runtime);
-#endif
 
     // free memory
     cudaFree(tA);
@@ -1055,7 +1118,7 @@ int main64(int argc, char* argv[])
 
     printf("BSR BMV-64: %.3lf\n", bmv64_time);
     printf("CuSPARSE CSR SpMV-float: %.3lf\n", cusparsecsrspmvfloat_time);
-
+    printf("speedup: %.3lf\n", cusparsecsrspmvfloat_time/bmv64_time);
 
     //============================================= free memory
     // free descr and handle memory

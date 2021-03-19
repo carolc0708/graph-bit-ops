@@ -197,14 +197,10 @@ __global__ void ToBit64Row(const T* __restrict__  A, ullong* B, const int A_heig
 template <typename Index, typename T>
 __global__ void bmv8_sparse(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
                             const Index* __restrict__ rowptr, const Index* __restrict__ colind,
-                            const Index nblockrows, const Index nblocks, int* runtime, int* load)
+                            const Index nblockrows, const Index nblocks)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx*4 <= nblockrows) {
-#ifdef PROF
-        clock_t start_time = clock();
-#endif
-
         // load
         GET_LANEID;
 
@@ -242,28 +238,16 @@ __global__ void bmv8_sparse(const uchar* __restrict__ A, const uchar* __restrict
 
             } // if load!=0
         } // <nblockrows
-
-#ifdef PROF
-        clock_t stop_time = clock();
-        runtime[bx] = (int)(stop_time - start_time);
-        load[bx] = 0;//(int)(row_end-row_start); <--- temp
-//        GET_LANEID;
-//        if (laneid == 1 && load[bx] == 0) {printf("[%d] %d %d\n", bx, (int)(stop_time - start_time), (int)(row_end-row_start));}
-#endif
     }
 }
 
 template <typename Index, typename T>
 __global__ void bmv16_sparse(const ushort* __restrict__ A, const ushort* __restrict__ B, T* C,
                             const Index* __restrict__ rowptr, const Index* __restrict__ colind,
-                            const Index nblockrows, const Index nblocks, int* runtime, int* load)
+                            const Index nblockrows, const Index nblocks)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx*2 <= nblockrows) {
-#ifdef PROF
-        clock_t start_time = clock();
-#endif
-
         // load
         GET_LANEID;
 
@@ -296,14 +280,6 @@ __global__ void bmv16_sparse(const ushort* __restrict__ A, const ushort* __restr
                 Csub[laneid] += (T)(Cm[0]);
             } // load != 0
         } // <nblockrows
-
-#ifdef PROF
-        clock_t stop_time = clock();
-        runtime[bx] = (int)(stop_time - start_time);
-        load[bx] = 0;//(int)(row_end-row_start); <--- temp
-//        GET_LANEID;
-//        if (laneid == 1 && load[bx] == 0) {printf("[%d] %d %d\n", bx, (int)(stop_time - start_time), (int)(row_end-row_start));}
-#endif
     }
 }
 
@@ -311,17 +287,12 @@ __global__ void bmv16_sparse(const ushort* __restrict__ A, const ushort* __restr
 // A (bsr matrix) * B (vector) = C (vector)
 // col-bin(32 x (blocksize x nblocks)) * row-bin((nblockrows x nblocks) x 1) = (nblockrow x nblocks) x 1
 template <typename Index, typename T>
-__global__ void bmv32_sparse(const unsigned* __restrict__ A, const unsigned* __restrict__ B,
-            T* C, const int A_height, const int A_width, const int B_width,
+__global__ void bmv32_sparse(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
             const Index* __restrict__ rowptr, const Index* __restrict__ colind,
-            const Index nblockrows, const Index nblocks, int* runtime, int* load)
+            const Index nblockrows, const Index nblocks)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
-#ifdef PROF
-        clock_t start_time = clock();
-#endif
-
         // load
         int row_start = rowptr[bx]; // 0 32 64 . . . 991 [0...nblockrows-1]
         int row_end = rowptr[bx+1]; // 32 64 96 . . . 991 1022 [1...nblockrows]
@@ -348,32 +319,18 @@ __global__ void bmv32_sparse(const unsigned* __restrict__ A, const unsigned* __r
              // store
              Csub[laneid] += (T)(Cm[0]); //Csub[laneid] = (T)(Cm[0]>0);
         }
-
-#ifdef PROF
-        clock_t stop_time = clock();
-        runtime[bx] = (int)(stop_time - start_time);
-        load[bx] = (int)(row_end-row_start);
-//        GET_LANEID;
-//        if (laneid == 1 && load[bx] == 0) {printf("[%d] %d %d\n", bx, (int)(stop_time - start_time), (int)(row_end-row_start));}
-#endif
     }
 }
 
 // bsr bmv64 no padding
 // A (bsr matrix) * B (vector) = C (vector)
 template <typename Index, typename T>
-__global__ void bmv64_sparse(const ullong* __restrict__ A, const ullong* __restrict__ B,
-                            T* C, const int A_height, const int A_width, const int B_width,
+__global__ void bmv64_sparse(const ullong* __restrict__ A, const ullong* __restrict__ B, T* C,
                             const Index* __restrict__ rowptr, const Index* __restrict__ colind,
-                            const Index nblockrows, const Index nblocks, int* runtime)
+                            const Index nblockrows, const Index nblocks)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     if (bx < nblockrows) {
-
-#ifdef PROF
-        clock_t start_time = clock();
-#endif
-
         // load
         unsigned row_start = rowptr[bx];
         unsigned row_end = rowptr[bx+1];
@@ -401,13 +358,6 @@ __global__ void bmv64_sparse(const ullong* __restrict__ A, const ullong* __restr
             Csub[laneid] += (T)t0;
             Csub[laneid+32] += (T)t1;
         }
-
-
-#ifdef PROF
-        clock_t stop_time = clock();
-        runtime[bx] = (int)(stop_time - start_time);
-//        printf("[%d, %d] %d ", bx, laneid, (int)(stop_time - start_time));
-#endif
     }
 }
 
@@ -613,6 +563,7 @@ __global__ void bmv8_sparse_sharedallunsigned(const unsigned* __restrict__ A, co
 }
 
 
+// 0.128
 template <typename Index, typename T>
 __global__ void bmv8_sparse_allunsigned(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
                                         const Index* __restrict__ rowptr, const Index* __restrict__ colind,
@@ -653,6 +604,119 @@ __global__ void bmv8_sparse_allunsigned(const unsigned* __restrict__ A, const un
                     b[3] = (((0xFF000000 >> ((colindsub[i+3]%4)*8)) & Bsub[colindsub[i+3]/4]) >> (24 - ((colindsub[i+3]%4)*8)));
 
                     Cm[0] += __popc(r0 & (b[0]|b[1]|b[2]|b[3]));
+                }
+
+                // store
+                Csub[tid] += (T)(Cm[0]);
+            } // load != 0
+        } // tid... <nblockrows
+    } // bx*128 <= nblockrows
+}
+
+// baseline new, remove uchar, 1024 threads
+// 0.125 (no share, no unsigned)
+template <typename Index, typename T>
+__global__ void bmv8_sparse_new(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                                        const Index nblockrows, const Index nblocks)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*128 <= nblockrows) {
+        // compute
+        // we got 32 warp to process 32 * 4 blockrow,
+        // resulting 32*32 rows
+
+        // the below is in a warp
+        GET_LANEID;
+
+        if(bx*128+(tid/32)*4+laneid/8<nblockrows) {
+            int row_start=0, row_end=0, load=0;
+            row_start = rowptr[bx*128+(tid/32)*4+laneid/8];
+            row_end = rowptr[bx*128+(tid/32)*4+laneid/8+1];
+            load = row_end-row_start;
+
+            if (load!= 0) {
+                const uchar* Asub = &(A[row_start*8]);
+                const uchar* Bsub = &(B[0]);
+                T* Csub = &(C[bx*1024]);
+                register unsigned Cm[1] = {0};
+                register unsigned a[4] = {0};
+                register unsigned b[4] = {0};
+
+                // compute 4 blocks on 4 consecutive blockrow at a time
+                for(int i=0; i<(int)ceil((float)load/4)*4; i+=4) {
+                    a[0] = (i*8+(laneid%8) < load*8 ? Asub[i*8+(laneid%8)] : 0) << 24;
+                    a[1] = (i*8+8+(laneid%8) < load*8 ? Asub[i*8+8+(laneid%8)] : 0) << 16;
+                    a[2] = (i*8+16+(laneid%8) < load*8 ? Asub[i*8+16+(laneid%8)] : 0) << 8;
+                    a[3] = (i*8+24+(laneid%8) < load*8 ? Asub[i*8+24+(laneid%8)] : 0);
+
+                    b[0] = (i*8+(laneid%8) < load*8 ? Bsub[colind[row_start+i]] : 0) << 24;
+                    b[1] = (i*8+8+(laneid%8) < load*8 ? Bsub[colind[row_start+i+1]] : 0) << 16;
+                    b[2] = (i*8+16+(laneid%8) < load*8 ? Bsub[colind[row_start+i+2]] : 0) << 8;
+                    b[3] = (i*8+24+(laneid%8) < load*8 ? Bsub[colind[row_start+i+3]] : 0);
+
+
+                    Cm[0] += __popc((a[0]|a[1]|a[2]|a[3]) & (b[0]|b[1]|b[2]|b[3]));
+                }
+
+                // store
+                Csub[tid] += (T)(Cm[0]);
+            } // load != 0
+        } // tid... <nblockrows
+    } // bx*128 <= nblockrows
+}
+
+// baseline new, remove uchar, 1024 threads
+// 0.130 (no share, vector unsigned)
+template <typename Index, typename T>
+__global__ void bmv8_sparse_new2(const uchar* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                                        const Index nblockrows, const Index nblocks)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*128 <= nblockrows) {
+        // compute
+        // we got 32 warp to process 32 * 4 blockrow,
+        // resulting 32*32 rows
+
+        // the below is in a warp
+        GET_LANEID;
+
+        if(bx*128+(tid/32)*4+laneid/8<nblockrows) {
+            int row_start=0, row_end=0, load=0;
+            row_start = rowptr[bx*128+(tid/32)*4+laneid/8];
+            row_end = rowptr[bx*128+(tid/32)*4+laneid/8+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const uchar* Asub = &(A[row_start*8]);
+                const unsigned* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*1024]);
+
+                register unsigned Cm[1] = {0};
+                register unsigned a[4] = {0};
+                register unsigned b[4] = {0};
+
+                // compute 4 blocks on 4 consecutive blockrow at a time
+                for(int i=0; i<(int)ceil((float)load/4)*4; i+=4) {
+                    a[0] = (i*8+(laneid%8) < load*8 ? Asub[i*8+(laneid%8)] : 0) << 24;
+                    a[1] = (i*8+8+(laneid%8) < load*8 ? Asub[i*8+8+(laneid%8)] : 0) << 16;
+                    a[2] = (i*8+16+(laneid%8) < load*8 ? Asub[i*8+16+(laneid%8)] : 0) << 8;
+                    a[3] = (i*8+24+(laneid%8) < load*8 ? Asub[i*8+24+(laneid%8)] : 0);
+
+                    b[0] = (((0xFF000000 >> ((colindsub[i]%4)*8)) & Bsub[colindsub[i]/4]) >> (24 - ((colindsub[i]%4)*8))) << 24;
+                    b[1] = (((0xFF000000 >> ((colindsub[i+1]%4)*8)) & Bsub[colindsub[i+1]/4]) >> (24 - ((colindsub[i+1]%4)*8))) << 16;
+                    b[2] = (((0xFF000000 >> ((colindsub[i+2]%4)*8)) & Bsub[colindsub[i+2]/4]) >> (24 - ((colindsub[i+2]%4)*8))) << 8;
+                    b[3] = (((0xFF000000 >> ((colindsub[i+3]%4)*8)) & Bsub[colindsub[i+3]/4]) >> (24 - ((colindsub[i+3]%4)*8)));
+
+
+
+                    Cm[0] += __popc((a[0]|a[1]|a[2]|a[3]) & (b[0]|b[1]|b[2]|b[3]));
                 }
 
                 // store
@@ -779,7 +843,6 @@ __global__ void bmv16_sparse_sharedvector(const ushort* __restrict__ A, const us
 
 }
 
-// <- now using
 template <typename Index, typename T>
 __global__ void bmv16_sparse_sharedallunsigned(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
                                         const Index* __restrict__ rowptr, const Index* __restrict__ colind,
@@ -842,6 +905,109 @@ __global__ void bmv16_sparse_sharedallunsigned(const unsigned* __restrict__ A, c
 
 }
 
+template <typename Index, typename T>
+__global__ void bmv16_sparse_allunsigned(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                                        const Index nblockrows, const Index nblocks)
+{
+
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*64 <= nblockrows) {
+        // compute
+        // we got 32 warp to process 32 * 2 blockrow,
+        // resulting 32*32 rows
+
+        // load
+        GET_LANEID;
+
+        if(bx*64+(tid/32)*2+laneid/16<nblockrows) {
+            int row_start=0, row_end=0, load=0;
+            row_start = rowptr[bx*64+(tid/32)*2+laneid/16];
+            row_end = rowptr[bx*64+(tid/32)*2+laneid/16+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const unsigned* Asub = &(A[(row_start/2)*16]);
+                const unsigned* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*1024]);
+                register unsigned Cm[1] = {0};
+                register unsigned b[2] = {0};
+
+                // compute 2 blocks on 2 consecutive blockrow at a time
+                for(int i=0; i<load; i+=2) {
+                    unsigned r0 = Asub[(i/2)*16+(laneid%16)];
+
+                    b[0] = (((0xFFFF0000 >> ((colindsub[i]%2)*16)) & Bsub[colindsub[i]/2]) >> (16 - ((colindsub[i]%2)*16))) << 16;
+                    b[1] = (((0xFFFF0000 >> ((colindsub[i+1]%2)*16)) & Bsub[colindsub[i+1]/2]) >> (16 - ((colindsub[i+1]%2)*16)));
+
+                    Cm[0] += __popc(r0 & (b[0]|b[1]));
+                }
+
+                // store
+                Csub[tid] += (T)(Cm[0]);
+
+            } // load != 0
+        } // tid... <nblockrows
+    } // bx*64 <= nblockrows
+
+}
+
+// bmv16 new
+// remove ushort, no share, no unsigned, 1024 threads
+template <typename Index, typename T>
+__global__ void bmv16_sparse_new(const ushort* __restrict__ A, const ushort* __restrict__ B, T* C,
+                                const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                                const Index nblockrows, const Index nblocks)
+{
+
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*64 <= nblockrows) {
+        // compute
+        // we got 32 warp to process 32 * 2 blockrow,
+        // resulting 32*32 rows
+
+        // load
+        GET_LANEID;
+
+        if(bx*64+(tid/32)*2+laneid/16<nblockrows) {
+            int row_start=0, row_end=0, load=0;
+            row_start = rowptr[bx*64+(tid/32)*2+laneid/16];
+            row_end = rowptr[bx*64+(tid/32)*2+laneid/16+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const ushort* Asub = &(A[row_start*16]);
+                const ushort* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*1024]);
+                register unsigned Cm[1] = {0};
+                register unsigned a[2] = {0};
+                register unsigned b[2] = {0};
+
+                // compute 2 blocks on 2 consecutive blockrow at a time
+                for(int i=0; i<(int)ceil((float)load/2)*2; i+=2) {
+                    a[0] = (i*16+(laneid%16) < load*16 ? Asub[i*16+(laneid%16)] : 0) << 16;
+                    a[1] = (i*16+16+(laneid%16) < load*16 ? Asub[i*16+16+(laneid%16)] : 0);
+
+                    b[0] = (i*16+(laneid%16) < load*16 ? Bsub[colind[row_start+i]] : 0) << 16;
+                    b[1] = (i*16+16+(laneid%16) < load*16 ? Bsub[colind[row_start+i+1]] : 0);
+
+                    Cm[0] += __popc((a[0]|a[1]) & (b[0]|b[1]));
+                }
+
+                // store
+                Csub[tid] += (T)(Cm[0]);
+
+            } // load != 0
+        } // tid... <nblockrows
+    } // bx*64 <= nblockrows
+
+}
 
 template <typename Index, typename T>
 __global__ void bmv16_sparse_twowarp(const ushort* __restrict__ A, const ushort* __restrict__ B, T* C,
@@ -892,6 +1058,224 @@ __global__ void bmv16_sparse_twowarp(const ushort* __restrict__ A, const ushort*
         } // tid... <nblockrows
     } // bx*4 <= nblockrows
 
+}
+
+// bsrbmv32 share, 1024 threads
+template <typename Index, typename T>
+__global__ void bmv32_sparse_sharedvector(const unsigned* __restrict__ A, const unsigned* __restrict__ B,
+            T* C, const int A_height, const int A_width, const int B_width,
+            const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+            const Index nblockrows, const Index nblocks)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*32 <= nblockrows) {
+        // load vector to shared
+        const int unit = 7;
+        const int sharedMemSize = unit * 1024; //32 * 1024; //48 * 1024; <-- this should be larger than blockrow
+        __shared__ unsigned shared_B[sharedMemSize];
+
+        #pragma unroll
+        for(int i=0; i<unit; i++) {
+            shared_B[tid*unit+i] = tid*unit+i < nblockrows ? B[tid*unit+i] : 0;
+        }
+
+        __syncthreads();
+
+         // compute
+        // we got 32 warp to process 32 * 1 blockrow,
+        // resulting 32*32 rows
+
+        // load
+        GET_LANEID;
+
+        if (bx*32+tid/32<nblockrows) {
+            int row_start, row_end, load=0;
+            row_start = rowptr[bx*32+tid/32];
+            row_end = rowptr[bx*32+tid/32+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const unsigned* Asub = &(A[row_start*32]);
+                const unsigned* Bsub = &(shared_B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*1024]);
+                register unsigned Cm[1] = {0};
+
+                #pragma unroll
+                for(int i=0; i<load; i++) {
+                    unsigned r0 = Asub[i*32+laneid];
+                    unsigned r1 = Bsub[(colindsub[i])];
+                    Cm[0] += __popc(r0 & r1);
+                }
+
+                // store
+                Csub[tid] += (T)(Cm[0]);
+            }
+        }
+    }
+}
+
+// 1024 per tb, no share
+template <typename Index, typename T>
+__global__ void bmv32_sparse_new(const unsigned* __restrict__ A, const unsigned* __restrict__ B,
+            T* C, const int A_height, const int A_width, const int B_width,
+            const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+            const Index nblockrows, const Index nblocks)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*32 <= nblockrows) {
+        // compute
+        // we got 32 warp to process 32 * 1 blockrow,
+        // resulting 32*32 rows
+
+        // load
+        GET_LANEID;
+
+        if (bx*32+tid/32<nblockrows) {
+            int row_start, row_end, load=0;
+            row_start = rowptr[bx*32+tid/32];
+            row_end = rowptr[bx*32+tid/32+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const unsigned* Asub = &(A[row_start*32]);
+                const unsigned* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*1024]);
+                register unsigned Cm[1] = {0};
+
+                #pragma unroll
+                for(int i=0; i<load; i++) {
+                    unsigned r0 = Asub[i*32+laneid];
+                    unsigned r1 = Bsub[(colindsub[i])];
+                    Cm[0] += __popc(r0 & r1);
+                }
+
+                // store
+                Csub[tid] += (T)(Cm[0]);
+            }
+        }
+    }
+}
+
+// bsrbmv64 share, 1024 threads
+template <typename Index, typename T>
+__global__ void bmv64_sparse_sharedvector(const ullong* __restrict__ A, const ullong* __restrict__ B,
+                            T* C, const int A_height, const int A_width, const int B_width,
+                            const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                            const Index nblockrows, const Index nblocks)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*32 <= nblockrows) {
+
+        // load vector to shared
+        const int unit = 4;//48;
+        const int sharedMemSize = unit * 1024; //64 * 1024; // 96 * 1024; <-- this should be larger than blockrow
+        __shared__ ullong shared_B[sharedMemSize];
+
+        #pragma unroll
+        for(int i=0; i<unit; i++) {
+            shared_B[tid*unit+i] = tid*unit+i < nblockrows ? B[tid*unit+i] : 0;
+        }
+
+        __syncthreads();
+
+        // compute
+        // we got 32 warp to process 32 * 1 blockrow,
+        // resulting 32*32 rows
+
+        // load
+        GET_LANEID;
+
+        if (bx*32+tid/32<nblockrows) {
+            int row_start, row_end, load=0;
+            row_start = rowptr[bx*32+tid/32];
+            row_end = rowptr[bx*32+tid/32+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+
+                const ullong* Asub = &(A[row_start*64]);
+                const ullong* Bsub = &(shared_B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*2048]);
+                register unsigned Cm[1] = {0};
+
+                #pragma unroll
+                for(int i=0; i<load; i++) {
+                    ullong a0 = Asub[i*64+laneid];
+                    ullong a1 = Asub[i*64+32+laneid];
+                    ullong b0 = Bsub[colindsub[i]];
+
+                    Cm[0] += (__popcll(a0 & b0) << 16) + __popcll(a1 & b0);
+                }
+
+                // store
+                short t0, t1;
+                asm volatile("mov.b32 {%0,%1}, %2;":"=h"(t1),"=h"(t0):"r"(Cm[0]));
+                Csub[(tid/32)*64+laneid] += (T)t0;
+                Csub[(tid/32)*64+32+laneid] += (T)t1;
+            }
+        }
+    }
+}
+
+// 1024 per tb, no share
+template <typename Index, typename T>
+__global__ void bmv64_sparse_new(const ullong* __restrict__ A, const ullong* __restrict__ B,
+                            T* C, const int A_height, const int A_width, const int B_width,
+                            const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                            const Index nblockrows, const Index nblocks)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*32 <= nblockrows) {
+
+        // compute
+        // we got 32 warp to process 32 * 1 blockrow,
+        // resulting 32*32 rows
+
+        // load
+        GET_LANEID;
+
+        if (bx*32+tid/32<nblockrows) {
+            int row_start, row_end, load=0;
+            row_start = rowptr[bx*32+tid/32];
+            row_end = rowptr[bx*32+tid/32+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+
+                const ullong* Asub = &(A[row_start*64]);
+                const ullong* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*2048]);
+                register unsigned Cm[1] = {0};
+
+                #pragma unroll
+                for(int i=0; i<load; i++) {
+                    ullong a0 = Asub[i*64+laneid];
+                    ullong a1 = Asub[i*64+32+laneid];
+                    ullong b0 = Bsub[colindsub[i]];
+
+                    Cm[0] += (__popcll(a0 & b0) << 16) + __popcll(a1 & b0);
+                }
+
+                // store
+                short t0, t1;
+                asm volatile("mov.b32 {%0,%1}, %2;":"=h"(t1),"=h"(t0):"r"(Cm[0]));
+                Csub[(tid/32)*64+laneid] += (T)t0;
+                Csub[(tid/32)*64+32+laneid] += (T)t1;
+            }
+        }
+    }
 }
 
 
