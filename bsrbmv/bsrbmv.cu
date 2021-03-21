@@ -22,6 +22,62 @@ __device__ __inline__ void store128(const void* addr, T a, T b, T c, T d)
     *((float4*)addr) = make_float4(*(float*)(&a),*(float*)(&b),*(float*)(&c),*(float*)(&d));
 }
 
+// col-major packing bit 4
+template <typename T>
+__global__ void ToBit4Col(const T* __restrict__ A, uchar* B, const int nblocks)
+{
+    GET_LANEID;
+    const unsigned by = blockIdx.y; // ceil(nblocks/64)
+    const unsigned bx = blockIdx.x; // 1
+    unsigned Bval;
+    T f0;
+
+#pragma unroll
+    for (int i=0; i<32; i++)
+    {
+        f0 = by*16*64+i*16*2+laneid < nblocks*16 ? A[by*16*64+i*16*2+laneid] : 0; // <-- laneid will get consecutive 32 (2-blocks)
+        unsigned r0 = __brev(__ballot_sync(0xFFFFFFFF, f0>0?1:0)); //__brev(__ballot(f0>0));
+        if (laneid == i) Bval = r0;
+    }
+
+    // layout block0 at high-16
+    B[by*4*64+laneid*4*2] = (Bval & 0xF0000000) >> 28;
+    B[by*4*64+laneid*4*2+1] = (Bval & 0x0F000000) >> 24;
+    B[by*4*64+laneid*4*2+2] = (Bval & 0x00F00000) >> 20;
+    B[by*4*64+laneid*4*2+3] = (Bval & 0x000F0000) >> 16;
+
+    // layout block1 at low-16
+    B[by*4*64+laneid*4*2+4] = (Bval & 0x0000F000) >> 12;
+    B[by*4*64+laneid*4*2+5] = (Bval & 0x00000F00) >> 8;
+    B[by*4*64+laneid*4*2+6] = (Bval & 0x000000F0) >> 4;
+    B[by*4*64+laneid*4*2+7] = (Bval & 0x0000000F);
+}
+
+// row-major packing bit 4
+template <typename T>
+__global__ void ToBit4Row(const T* __restrict__ A, uchar* B, const int nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+
+    if (bx < (int)ceil((float)nblockrows/4)) {
+        unsigned Bval=0;
+        T f0;
+
+        #pragma unroll
+        for (int i=0; i<32; i++)
+        {
+            if (i%8 < 4) f0 = (T)(0); // high-4 bit remain 0
+            else f0 = A[bx*4*4+(i-4*((i/8)+1))];
+
+            Bval = (Bval<<1) + (f0>0);
+        }
+        B[bx*4] = (Bval & 0xFF000000) >> 24;
+        B[bx*4+1] = (Bval & 0x00FF0000) >> 16;
+        B[bx*4+2] = (Bval & 0x0000FF00) >> 8;
+        B[bx*4+3] = Bval & 0x000000FF;
+    }
+}
+
 // col-major packing bit 8
 // process 4 8x8x4 at the same time
 template <typename T>
@@ -193,6 +249,55 @@ __global__ void ToBit64Row(const T* __restrict__  A, ullong* B, const int A_heig
         B[bx] = Bval;
     }
 }
+
+// process consecutive 8 blockrows at a time, result in 32 consecutive rows
+template <typename Index, typename T>
+__global__ void bmv4_sparse(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
+                            const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                            const Index nblockrows, const Index nblocks)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx*8 <= nblockrows) {
+        // load
+        GET_LANEID;
+
+        if (bx*8+laneid/8<nblockrows) {
+            int row_start=0, row_end=0, load=0;
+            row_start = rowptr[bx*8+laneid/4];
+            row_end = rowptr[bx*8+laneid/4+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const uchar* Asub = &(A[(row_start*4)]); //<--
+                const uchar* Bsub = &(B[0]);
+                T* Csub = &(C[bx*32]);
+                register unsigned Cm[1] = {0};
+
+                // compute 4 blocks on 4 consecutive blockrow at a time
+                for(int i=0; i<(int)ceil((float)load/4)*4; i+=4) {
+                    uchar a0 = i*4+(laneid%4) < load*4 ? Asub[i*4+(laneid%4)] : 0;
+                    uchar a1 = i*4+4+(laneid%4) < load*4 ? Asub[i*4+4+(laneid%4)] : 0;
+                    uchar a2 = i*4+8+(laneid%4) < load*4 ? Asub[i*4+8+(laneid%4)] : 0;
+                    uchar a3 = i*4+12+(laneid%4) < load*4 ? Asub[i*4+12+(laneid%4)] : 0;
+                    unsigned r0 = a0 << 24 | a1 << 16 | a2 << 8 | a3;
+
+                    uchar b0 = i*4+(laneid%4) < load*4 ? Bsub[colind[row_start+i]] : 0;
+                    uchar b1 = i*4+4+(laneid%4) < load*4 ? Bsub[colind[row_start+i+1]] : 0;
+                    uchar b2 = i*4+8+(laneid%4) < load*4 ? Bsub[colind[row_start+i+2]] : 0;
+                    uchar b3 = i*4+12+(laneid%4) < load*4 ? Bsub[colind[row_start+i+3]] : 0;
+                    unsigned r1 = b0 << 24 | b1 << 16 | b2 << 8 | b3;
+
+                    Cm[0] += __popc(r0 & r1);
+                }
+
+                // store
+                Csub[laneid] += (T)(Cm[0]);
+
+            } // if load!=0
+        } // <nblockrows
+    }
+}
+
 
 template <typename Index, typename T>
 __global__ void bmv8_sparse(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,

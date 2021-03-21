@@ -22,6 +22,62 @@ __device__ __inline__ void store128(const void* addr, T a, T b, T c, T d)
     *((float4*)addr) = make_float4(*(float*)(&a),*(float*)(&b),*(float*)(&c),*(float*)(&d));
 }
 
+// col-major packing bit 4
+template <typename T>
+__global__ void ToBit4Col(const T* __restrict__ A, uchar* B, const int nblocks)
+{
+    GET_LANEID;
+    const unsigned by = blockIdx.y; // ceil(nblocks/64)
+    const unsigned bx = blockIdx.x; // 1
+    unsigned Bval;
+    T f0;
+
+#pragma unroll
+    for (int i=0; i<32; i++)
+    {
+        f0 = by*16*64+i*16*2+laneid < nblocks*16 ? A[by*16*64+i*16*2+laneid] : 0; // <-- laneid will get consecutive 32 (2-blocks)
+        unsigned r0 = __brev(__ballot_sync(0xFFFFFFFF, f0>0?1:0)); //__brev(__ballot(f0>0));
+        if (laneid == i) Bval = r0;
+    }
+
+    // layout block0 at high-16
+    B[by*4*64+laneid*4*2] = (Bval & 0xF0000000) >> 28;
+    B[by*4*64+laneid*4*2+1] = (Bval & 0x0F000000) >> 24;
+    B[by*4*64+laneid*4*2+2] = (Bval & 0x00F00000) >> 20;
+    B[by*4*64+laneid*4*2+3] = (Bval & 0x000F0000) >> 16;
+
+    // layout block1 at low-16
+    B[by*4*64+laneid*4*2+4] = (Bval & 0x0000F000) >> 12;
+    B[by*4*64+laneid*4*2+5] = (Bval & 0x00000F00) >> 8;
+    B[by*4*64+laneid*4*2+6] = (Bval & 0x000000F0) >> 4;
+    B[by*4*64+laneid*4*2+7] = (Bval & 0x0000000F);
+}
+
+// row-major packing bit 4
+template <typename T>
+__global__ void ToBit4Row(const T* __restrict__ A, uchar* B, const int nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+
+    if (bx < (int)ceil((float)nblockrows/4)) {
+        unsigned Bval=0;
+        T f0;
+
+        #pragma unroll
+        for (int i=0; i<32; i++)
+        {
+            if (i%8 < 4) f0 = (T)(0); // high-4 bit remain 0
+            else f0 = A[bx*4*4+(i-4*((i/8)+1))];
+
+            Bval = (Bval<<1) + (f0>0);
+        }
+        B[bx*4] = (Bval & 0xFF000000) >> 24;
+        B[bx*4+1] = (Bval & 0x00FF0000) >> 16;
+        B[bx*4+2] = (Bval & 0x0000FF00) >> 8;
+        B[bx*4+3] = Bval & 0x000000FF;
+    }
+}
+
 // col-major packing bit 8
 // process 4 8x8x4 at the same time
 template <typename T>
@@ -182,6 +238,58 @@ __global__ void ToBit64Row(const T* __restrict__  A, ullong* B, const int A_heig
         Bval = (Bval<<1) | (f0>0);
     }
     B[bx] = Bval;
+}
+
+template <typename Index, typename T>
+__global__ void bmm4_sparse(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
+                            const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                            const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                            const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+        GET_LANEID;
+        T* Csub = &C[0];
+
+        register int Cm[4] = {0};
+        int sum = 0;
+
+        // load
+        int A_row_start = A_rowptr[bx];
+        int A_row_end = A_rowptr[bx+1];
+        const uchar* Asub = &(A[A_row_start*4]);
+        for (int i=A_row_start; i<(int)ceil(float(A_row_end)/8)*8; i+=8) {
+            uchar r0 = 0;
+            if (i*4+laneid < A_row_end*4) {
+                r0 = Asub[(i-A_row_start)*4+laneid];
+
+                int A_col = A_colind[i+laneid/4];
+                int B_row_start = B_rowptr[A_col];
+                int B_row_end = B_rowptr[A_col+1];
+                const uchar* Bsub = &(B[B_row_start*4]);
+                for (int j=B_row_start; j<B_row_end; j+=1) {
+                    uchar r1 = Bsub[(j-B_row_start)*4+laneid%4];
+    //                int B_col = B_colind[j];
+
+                    /* bmm */
+                    #pragma unroll
+                    for (int k=0; k<4; k++)
+                    {
+                        uchar r2 = __shfl_sync(0xFFFFFFFF, r1, k+(laneid/4)*4); //__shfl(r1, k+(laneid/4)*4);
+                        Cm[k] += __popc(r0 & r2);
+                    }
+                    /* bmm */
+                } // j in [B_row_start ... B_row_end]
+            } // if i*4+laneid < A_row_end*4
+        } // i in [A_row_start ... A_row_end]
+
+        // store
+
+        for (int l=0; l<4; l++) sum += Cm[l];
+
+        atomicAdd(Csub, sum);
+
+    } // if bx < nblockrows
 }
 
 template <typename Index, typename T>

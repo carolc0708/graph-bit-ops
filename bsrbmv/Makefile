@@ -10,6 +10,10 @@ bsrbmv16-sharedallunsigned bsrbmv16-allunsigned bsrbmv16-new bsrbmv16-baseline \
 bsrbmv32-shared bsrbmv32-new bsrbmv32-baseline \
 bsrbmv64-shared bsrbmv64-new bsrbmv64-baseline
 
+# bsrbmv4
+bsrbmv4: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
+	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=4 -o $@
+
 # new versions
 bsrbmv8-sharedallunsigned: benchmark-bsrbmv-all.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv-all.cu -DBLOCKSIZE=8 -DSHARED -DALLUNSIGNED -o $@
@@ -109,7 +113,7 @@ bsrbmv64debug: benchmark-bsrbmv.cu bsrbmv.cu utility.cu csr2bsr_batch.cu
 	$(CC) $(FLAGS) $(LINK) benchmark-bsrbmv.cu -DBLOCKSIZE=64 -DDEBUG -o $@
 
 clean:
-	rm -f bsrbmv8 bsrbmv16 bsrbmv32 bsrbmv64 \
+	rm -f bsrbmv4 bsrbmv8 bsrbmv16 bsrbmv32 bsrbmv64 \
 	bsrbmv8-sharedallunsigned bsrbmv8-allunsigned bsrbmv8-new bsrbmv8-baseline \
 	bsrbmv16-sharedallunsigned bsrbmv16-allunsigned bsrbmv16-new bsrbmv16-baseline \
 	bsrbmv32-shared bsrbmv32-new bsrbmv32-baseline \

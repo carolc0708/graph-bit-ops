@@ -182,13 +182,14 @@ __global__ void printResVec(const T* vec, const int N)
 //======================================================================================
 void printHostVec(const float* vec, const int N)
 {
-    for(int i=0; i<N; i++) {printf(vec[i]>0?"1":"0"); if (i%16==15) printf(" ");}
+    for(int i=0; i<N; i++) {printf(vec[i]>0?"1":"0"); if (i%4==3) printf(" ");}
     printf("\n");
 }
 
 //======================================================================================
 // Print function for binarized vector in device
 //======================================================================================
+
 __global__ void printBin8Vec (const uchar* packvec, const int N)
 {
     for(int i=0; i<N; i++) {
@@ -276,6 +277,15 @@ __global__ void printDeviceIndArr(const Index* indarr, const Index N)
 {
     for(Index i=0; i<N; i++) printf("%d ", indarr[i]);
     printf("\n");
+}
+
+__global__ void printGlobalBSRBlock4(const uchar* bsrval, const int blocksize, const int nblocks)
+{
+    printf("--- global bsr 4 block (bitmap) --- \n");
+    for(int b=0; b<nblocks; b++) {
+        printf("[%d]\n", b); for(int j=0; j<blocksize; j++) { for(uchar i = 1 << 7; i > 0; i = i / 2)
+        { (bsrval[b*blocksize+j]&i)?printf("1"):printf("0"); } printf("\n"); }
+    }
 }
 
 __global__ void printGlobalBSR8(const int* bsrrowptr, const int* bsrcolind, const uchar* bsrval,
