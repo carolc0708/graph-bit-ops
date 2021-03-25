@@ -517,6 +517,10 @@ int main8(int argc, char* argv[])
     int gridDim_2 = (int)ceil(cbrt((double)nblockrows/8));
     dim3 grid_2(gridDim_2, gridDim_2, gridDim_2);
 
+    int split = 2;
+    int gridDim_multi = (int)ceil(cbrt(((double)nblockrows/128)*split));
+    dim3 grid_multi(gridDim_multi, gridDim_multi, gridDim_multi);
+
 
     // memory setting
 //    int carveout = 50; // prefer shared memory capacity 50% of maximum
@@ -543,8 +547,10 @@ int main8(int argc, char* argv[])
 //        bmv8_sparse_sharedallunsigned<int, float><<<grid_new, 1024>>>(tA_unsigned, tB_unsigned, fC, bsrRowPtr_unsigned, bsrColInd_unsigned, nblockrows, nblocks);
 
 //        bmv8_sparse_allunsigned<int, float><<<grid_new, 1024>>>(tA_unsigned, tB_unsigned, fC, bsrRowPtr_unsigned, bsrColInd_unsigned, nblockrows, nblocks);
-        bmv8_sparse_new<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+//        bmv8_sparse_new<int, float><<<grid_new, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
 //        bmv8_sparse_new2<int, float><<<grid_new, 1024>>>(tA, tB_unsigned, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+//        bmv8_sparse_sharedallunsigned_multi<int, float><<<grid_multi, 1024>>>(tA_unsigned, tB_unsigned, fC, bsrRowPtr_unsigned, bsrColInd_unsigned, nblockrows, nblocks);
+          bmv8_sparse_sharedvector_multi<int, float><<<grid_multi, 1024>>>(tA, tB, fC, bsrRowPtr, bsrColInd, nblockrows, nblocks);
     }
 
     bmv_timer.Stop();
@@ -759,7 +765,7 @@ int main16(int argc, char* argv[])
 	for (int i = 0; i < (nblockrows * blocksize) * 1; i ++)
     {
         float x = (float)rand() / RAND_MAX;
-        if (i >= ncols) B[i] = 0;
+        if (i >= nrows) B[i] = 0;
         else B[i] = (x > 0.5) ? 1 : 0;
     }
 

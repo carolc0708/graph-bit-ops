@@ -173,7 +173,7 @@ int countNnzinVec(const T* vec, const int N)
 template <typename T>
 __global__ void printResVec(const T* vec, const int N)
 {
-    for(int i=0; i<N; i++) { printf("%d ", (int)vec[i]); }
+    for(int i=0; i<N; i++) { printf("%d", (int)vec[i]); if(i%32 == 31) printf(" ");}
     printf("\n");
 }
 
@@ -218,6 +218,7 @@ __global__ void printBin32Vec (const unsigned* packvec, const int N)
         unsigned j;
         for(j = 1 << 31; j > 0; j = j / 2)
             (packvec[i] & j) ? printf("1") : printf("0");
+        printf(" ");
     }
     printf("\n");
 }
@@ -424,6 +425,12 @@ __global__ void setDeviceValArr(T *arr, const Index N, const T val)
     for (Index i=0; i<N; i++) arr[i] = val;
 }
 
+template <typename Index, typename T>
+__global__ void setDeviceValArrElem(T *arr, const Index ind, const T val)
+{
+    arr[ind] = val;
+}
+
 //======================================================================================
 // Print function for timing report
 //======================================================================================
@@ -535,4 +542,30 @@ void printBytes(unsigned bytes)
         printf("%d (%s)", (int)count, suffixes[s]);
     else
         printf("%.1f (%s)", count, suffixes[s]);
+}
+
+//======================================================================================
+// Debug utility for binarized function
+//======================================================================================
+__global__ void verify32BinResVec (const unsigned* packvec, const float* fullvec, const int N)
+{
+    printf("incorrect ids: \n");
+    for(int i=0; i<N; i++) {
+        unsigned j;
+        int k = 0;
+        for(j = 1 << 31; j > 0; j = j / 2) {
+            if(((packvec[i] & j)>0) != (int)(fullvec[i*32+k]>0)) {
+                printf("%d ", i*32+k);
+                printf("(%d %d) ", (packvec[i] & j), (int)fullvec[i*32+k]);
+            }
+            k++;
+        }
+//        printf("\n");
+
+//        for(int k=0; k<32; k++) printf("%d", (int)fullvec[i*32+k]);
+//        printf("\n");
+//
+//        printf("--------\n");
+    }
+    printf("\n");
 }
