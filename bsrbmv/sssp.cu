@@ -1,4 +1,5 @@
 #include <iostream>
+#include <limits> // for std::numeric_limits<float>::max()
 #include <sys/time.h>
 
 #define TEST_TIMES 10000
@@ -88,9 +89,6 @@ int main32(int argc, char* argv[])
     unsigned bytes = (nblocks * blocksize * 4 + (nblockrows+1+nblocks) * 4);
     printf("bsr total size: "); printBytes(bytes); printf("\n");
 
-    
-
-
 
     // csr2csc for B as A^T
     int* cscRowInd, *cscColPtr;
@@ -130,63 +128,36 @@ int main32(int argc, char* argv[])
     free(h_cscRowInd);
     free(h_cscColPtr);
 
-    // ============================================= input vector storage
-    // generate random vector
-    srand(time(0));
-	float *B = (float*)malloc((nblockrows * blocksize) * 1 * sizeof(float));
-//	for (int i = 0; i < (nblockrows * blocksize) * 1; i ++)
-//    {
-//        float x = (float)rand() / RAND_MAX;
-//        if (i >= ncols) B[i] = 0;
-//        else B[i] = (x > 0.5) ? 1 : 0;
-//    }
-    for(int i=0 ;i<(nblockrows * blocksize); i++) B[i] = 0;
-    B[0] = 1;
-
-#ifdef VERBOSE
-    printf("initialize a vector with size %d x 1\n", (nblockrows * blocksize));
-//    printf("orivec: \n"); printHostVec(B, (nblockrows * blocksize));
-#endif
-
-    // copy to device
-	float *fB;
-	cudaMalloc(&fB, (nblockrows * blocksize) * 1 * sizeof(float));
-	cudaMemcpy(fB, B, (nblockrows * blocksize) * 1 * sizeof(float), cudaMemcpyHostToDevice);
-
-    // pack B
-    unsigned *tB;
-    cudaMalloc(&tB, nblockrows * 1 * sizeof(unsigned)); // (nblockrows * blocksize) / 32 = nblockrows
-
-    // get gridDim, this is to avoid nblockrows being larger than MAX_gridDim (65535?!)
-    int gridDim = (int)ceil(cbrt((double)nblockrows));
-    dim3 grid(gridDim, gridDim, gridDim);
-
-#ifdef VERBOSE
-    printf("cbrt(nblockrows) = %d\n", gridDim);
-#endif
-
-    ToBit32Row<float><<<grid, 32>>>(fB, tB, nblockrows * blocksize, 1, nblockrows); // dense vector
-
-
     // ============================================= BSTC-32 bsr bmv
+    // visited
+    unsigned* visited;
+    cudaMalloc((void**)&visited, nblockrows * blocksize * sizeof(unsigned));
+    setDeviceValArr<int, unsigned><<<1,1>>>(visited, nblockrows * blocksize, 2147483647);
+    setSource<<<1,1>>>(visited, 0); // source_ind = 0;
 
     // init frontier
     unsigned *frontier1;
-    cudaMalloc((void**)&frontier1, nblockrows * sizeof(unsigned));
-    setDeviceValArr<int, unsigned><<<1,1>>>(frontier1, nblockrows, 0);
-    cudaMemcpy(frontier1, tB, nblockrows * sizeof(unsigned), cudaMemcpyDeviceToDevice);
+    cudaMalloc((void**)&frontier1, nblockrows * blocksize * sizeof(unsigned));
+    setDeviceValArr<int, unsigned><<<1,1>>>(frontier1, nblockrows*blocksize, 2147483647);
+    setSource<<<1,1>>>(frontier1, 0); // source_ind = 0;
 
     unsigned* frontier2;
-    cudaMalloc((void**)&frontier2, nblockrows * sizeof(unsigned));
-    setDeviceValArr<int, unsigned><<<1,1>>>(frontier2, nblockrows, 0);
+    cudaMalloc((void**)&frontier2, nblockrows * blocksize * sizeof(unsigned));
+    setDeviceValArr<int, unsigned><<<1,1>>>(frontier2, nblockrows * blocksize, 2147483647);
+    setSource<<<1,1>>>(frontier1, 0); // source_ind = 0;
 
-    unsigned* temp;
-    cudaMalloc((void**)&temp, nblockrows * sizeof(unsigned));
-    setDeviceValArr<int, unsigned><<<1,1>>>(temp, nblockrows, 0);
+    // mask vector
+    unsigned* mask;
+    cudaMalloc((void**)&mask, nblockrows * blocksize * sizeof(unsigned));
+    setDeviceValArr<int, unsigned><<<1,1>>>(mask, nblockrows * blocksize, 0);
 
-    unsigned* visited;
-    cudaMalloc((void**)&visited, nblockrows * sizeof(unsigned));
-    
+    //
+    int f1_nvals = 1;
+    unsigned succ = 1.f;
+    unsigned *succptr;
+    cudaMalloc((void**)&succptr, sizeof(unsigned));
+    int i;
+
 
     int gridDim_new = (int)ceil(cbrt((double)nblockrows/32));
     dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
@@ -194,10 +165,7 @@ int main32(int argc, char* argv[])
 
     printf("nrows: %d\n", nrows);
     printf("------------------------------------\n");
-    int succ = 0, prev_succ = 0;
-    int *succptr;
-    cudaMalloc((void**)&succptr, sizeof(int));
-    int i;
+
 
      dim3 NT, NB;
      int nt = 1024;
@@ -208,21 +176,15 @@ int main32(int argc, char* argv[])
      NB.y = 1;
      NB.z = 1;
 
-     int zero = 0;
-
-
 
     // ------
     GpuTimer bmvbin_timer;
     double bmvbin32_time;
     bmvbin_timer.Start();
 
-    for (i=0; i<TEST_TIMES; i++) {
+    for (i=0; i<5; i++) {
 
-       // assign new nodes to visited
-       OR<<<(int)ceil(nblockrows/1024.0), 1024>>>(visited, nblockrows, frontier1);
-
-       // frontier2 = A * frontier1, mask = visited
+       // ------------------------------------------------ vxm no mask, result = min(f1 + A)
        // solution 1
        // bmvbin_timer.Start();
        // bmv32_sparse_bin_masked_v1<int, float><<<NB, NT>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
@@ -245,28 +207,45 @@ int main32(int argc, char* argv[])
 
        // solution 4
        // bmvbin_timer.Start();
-       bmv32_sparse_bin_masked_v4<int, float><<<grid_new, 1024>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
+//       printf("frontier1: \n"); printResVec<<<1,1>>>(frontier1, nblockrows*blocksize);
+
+       bmv32_sparse_full_minplus<int, unsigned><<<gridDim_new, 512>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows);
+//       printf("frontier2: \n"); printResVec<<<1,1>>>(frontier2, nblockrows*blocksize);
        // bmvbin_timer.Stop();
        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
        // solution 5
        // bmvbin_timer.Start();
-       // bmv32_sparse_bin_masked_v5<int, float><<<grid_new, 1024>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
+       // bmv32_sparse_bin_masked_v5<int, ><<<grid_new, 1024>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
        // bmvbin_timer.Stop();
        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
+       // ------------------------------------------------
+
+       // ewise add, CustomLessPlusSemiring: m = v+f2 (mask = 1 if f2 < v else 0)
+//       ewiseLess<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(mask, nblockrows*blocksize, visited, frontier2);
+
+       // ewise add, MinimumPlusSemiring: v = v+f2 (v = min(v, f2))
+//       ewiseMin<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(visited, nblockrows*blocksize, visited, frontier2);
+
+       // Similar to BFS, except we need to filter out the unproductive vertices
+       // here rather than as part of masked vxm
+       // assign f2 with max if it is masked with 0
+//       assignMax<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(frontier2, nblockrows*blocksize, mask, 2147483647);
 
        // swap frontier 1 and frontier2, frontier2 fill 0
-       cudaMemcpy(frontier1, frontier2, nblockrows * sizeof(unsigned), cudaMemcpyDeviceToDevice);
-       fillZero<<<(int)ceil(nblockrows/1024.0), 1024>>>(frontier2, nblockrows);
-       // printf("result_bsrbmv32-bin: \n"); printBin32Vec<<<1,1>>>(frontier1, nblockrows);
+       cudaMemcpy(frontier1, frontier2, nblockrows*blocksize*sizeof(unsigned), cudaMemcpyDeviceToDevice);
+//       fillValUnsigned<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(frontier2, nblockrows*blocksize, 0);
+
+       // get f1 nvals
        
-       
-       // get succ by reduce frontier1
-       resetSuccptr<<<1,1>>>(succptr); //<-- use together with reduce
-       reduce<<<(int)ceil(nblockrows/1024.0), 1024>>>(frontier1, nblockrows, succptr);
-       // reduce_naive<<<1,1>>>(frontier1, nblockrows, succptr);
-       cudaMemcpy(&succ, succptr, sizeof(int), cudaMemcpyDeviceToHost);
-       // printf("succ: %d\n", succ); // <-- print will slow down some time
+       // get succ by reduce mask
+       resetSuccptrUnsigned<<<1,1>>>(succptr); //<-- use together with reduce
+       reduceAddUnsigned<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(succptr, nblockrows*blocksize, frontier2);
+       cudaMemcpy(&succ, succptr, sizeof(unsigned), cudaMemcpyDeviceToHost);
+//       printf("succ: %d\n", succ); // <-- print will slow down some time
+
+//       int k;
+//       std::cin >> k;
        
        // terminate condition
        if (succ == 0) break;
@@ -276,13 +255,12 @@ int main32(int argc, char* argv[])
     bmvbin32_time = bmvbin_timer.ElapsedMillis();
 
     printf("------------------------------------\n");
-    int niter = i+1; printf("niter: %d\n", niter);
+    int niter = i; printf("niter: %d\n", niter);
     // ------
 
 
     // free storage
     cudaFree(tA);
-    cudaFree(tB);
 
 #ifdef VERBOSE
 //    printf("result_bsrbmv32: \n"); printResVec<float><<<1,1>>>(fC, nrows);
@@ -308,8 +286,6 @@ int main32(int argc, char* argv[])
     cudaFree(csrRowPtr);
     cudaFree(csrColInd);
     cudaFree(csrVal);
-
-    cudaFree(fB);
 }
 
 int main(int argc, char* argv[])

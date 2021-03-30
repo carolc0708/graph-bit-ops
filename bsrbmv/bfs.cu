@@ -180,10 +180,6 @@ int main32(int argc, char* argv[])
     cudaMalloc((void**)&frontier2, nblockrows * sizeof(unsigned));
     setDeviceValArr<int, unsigned><<<1,1>>>(frontier2, nblockrows, 0);
 
-    unsigned* temp;
-    cudaMalloc((void**)&temp, nblockrows * sizeof(unsigned));
-    setDeviceValArr<int, unsigned><<<1,1>>>(temp, nblockrows, 0);
-
     unsigned* visited;
     cudaMalloc((void**)&visited, nblockrows * sizeof(unsigned));
     
@@ -207,10 +203,6 @@ int main32(int argc, char* argv[])
      NB.x = (nblockrows+nt-1)/nt;
      NB.y = 1;
      NB.z = 1;
-
-     int zero = 0;
-
-
 
     // ------
     GpuTimer bmvbin_timer;

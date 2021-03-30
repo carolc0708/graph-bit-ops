@@ -173,7 +173,7 @@ int countNnzinVec(const T* vec, const int N)
 template <typename T>
 __global__ void printResVec(const T* vec, const int N)
 {
-    for(int i=0; i<N; i++) { printf("%d", (int)vec[i]); if(i%32 == 31) printf(" ");}
+    for(int i=0; i<N; i++) { (int)vec[i] != 2147483647 ? printf("%d ", (int)vec[i]) : printf("inf "); if(i%32 == 31) printf(" ");}
     printf("\n");
 }
 

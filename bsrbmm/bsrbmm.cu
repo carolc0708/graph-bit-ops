@@ -555,6 +555,70 @@ __global__ void bmm64_sparse(const ullong* __restrict__ A, const ullong* __restr
 }
 
 //======================================================================================
+// Mask function
+//======================================================================================
+template <typename Index, typename T>
+__global__ void bmm32_sparse_masked(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+            const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+            const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+            const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+        GET_LANEID;
+        T* Csub = &C[0];
+
+        int sum = 0;
+        bool mask = false;
+
+        // load
+        int A_row_start = A_rowptr[bx]; // 0 32 64 . . . 991
+        int A_row_end = A_rowptr[bx+1]; // 32 64 96 . . . 991 1022
+        const unsigned* Asub = &(A[A_row_start*32]); // block is in continuous layout
+        for (int i=A_row_start; i<A_row_end; i++) {
+            unsigned r0 = Asub[(i-A_row_start)*32+laneid];
+
+            int A_col = A_colind[i];
+            int B_row_start = B_rowptr[A_col];
+            int B_row_end = B_rowptr[A_col+1];
+            const unsigned* Bsub = &(B[B_row_start*32]);
+            for (int j=B_row_start; j<B_row_end; j++) {
+
+                /* checking mask */
+                int B_col = B_colind[j];
+                #pragma unroll
+                for(int l=A_row_start; l<A_row_end; l++) { if (B_col == A_colind[l]) mask = true; }
+                /* checking mask */
+
+                if (mask) {
+                    unsigned r1 = Bsub[(j-B_row_start)*32+laneid];
+                    unsigned Cm = 0;
+
+                    /* bmm */
+                    #pragma unroll
+                    for (int k=0; k<32; k++)
+                    {
+                        unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k); //from lane-j, r1 of matrix B
+                        Cm = Cm << 1 | (__popc(r0 & r2) > 0 ? 1 : 0); // each lane dot-product with the column of B
+                    }
+                    /* bmm */
+
+                    /* mask */
+                    sum += (int)(__popc(Cm & r0));
+
+                    /* reset mask */
+                    mask = false;
+                }
+            } // j in [B_row_start ... B_row_end]
+        } // i in [A_row_start ... A_row_end]
+
+        // store
+        atomicAdd(Csub, sum);
+    } // if bx < nblockrows + 1
+}
+
+
+//======================================================================================
 // Preprocessing and Postprocessing function
 //======================================================================================
 

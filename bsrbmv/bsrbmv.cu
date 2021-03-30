@@ -607,50 +607,98 @@ __global__ void bmv8_sparse_sharedallunsigned_multi(const unsigned* __restrict__
 }
 
 //======================================================================================
-// masked bmv
+// bfs.cu
 //======================================================================================
 // result in binary
 template <typename Index, typename T>
-__global__ void bmv32_sparse_bin(const unsigned* __restrict__ A, const unsigned* __restrict__ B, unsigned* C,
-            const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
+__global__ void bmv32_sparse_bin_masked_v2(const unsigned* __restrict__ A, const unsigned* __restrict__ B, unsigned* C,
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind, 
+                                        const Index nblockrows, const unsigned* __restrict__ mask)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+
     if (bx < nblockrows) {
         // load
-        int row_start = rowptr[bx]; // 0 32 64 . . . 991 [0...nblockrows-1]
-        int row_end = rowptr[bx+1]; // 32 64 96 . . . 991 1022 [1...nblockrows]
+        int row_start = rowptr[bx];
+        int row_end = rowptr[bx+1];
 
         if (row_start != row_end) {
 
             GET_LANEID;
             const unsigned warpid = (threadIdx.x >> 5);
 
-            const unsigned* Asub = &(A[row_start*32]); // block is in continuous layout
-            const unsigned* Bsub = &(B[0]); // 0, when it is mv
+            const unsigned* Asub = &(A[row_start*32]);
+            const unsigned* Bsub = &(B[0]);
             unsigned* Csub = &(C[bx]);
-            register unsigned Cm[1] = {0}; // allocate 1 register
+            register unsigned Cm[1] = {0};
 
             // compute
-            // if that row has more than 1 col block
             for (int i=row_start; i<row_end; i++) {
-//                Cm[0] = 0;
-                unsigned r0 = Asub[(i-row_start)*32+laneid]; // block is in continuous layout
-                unsigned r1 = Bsub[(colind[i])]; // only first row is required
+
+                unsigned r0 = Asub[(i-row_start)*32+laneid];
+                unsigned r1 = Bsub[(colind[i])];
 
                 Cm[0] += __popc(r0 & r1);
 
             }
 
              // store
-             unsigned r2 = __ballot((T)Cm[0]>0);
-             Csub[warpid] |= __brev(r2);
+             unsigned r2 = __ballot_sync(0xFFFFFFFF, (T)Cm[0]>0?1:0);
+             Csub[warpid] = (__brev(r2) & (~mask[bx+warpid]));
+        }
+    }
+}
+
+// 1024 trd per warp
+template <typename Index, typename T>
+__global__ void bmv32_sparse_bin_masked_v4(const unsigned* __restrict__ A, const unsigned* __restrict__ B, unsigned* C,
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind, 
+                                        const Index nblockrows, const unsigned* __restrict__ mask)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*32 <= nblockrows) {
+        // compute
+        // we got 32 warp to process 32 * 1 blockrow,
+        // resulting 32*32 rows
+
+        // load
+        GET_LANEID;
+        const unsigned warpid = (tid >> 5);
+
+        if (bx*32+tid/32<nblockrows) {
+
+            int row_start, row_end, load=0;
+            row_start = rowptr[bx*32+tid/32];
+            row_end = rowptr[bx*32+tid/32+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const unsigned* Asub = &(A[row_start*32]);
+                const unsigned* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                unsigned* Csub = &(C[bx*32]);
+                register unsigned Cm[1] = {0};
+
+                #pragma unroll
+                for(int i=0; i<load; i++) {
+                    unsigned r0 = Asub[i*32+laneid];
+                    unsigned r1 = Bsub[(colindsub[i])];
+                    Cm[0] += __popc(r0 & r1);
+                }
+
+                // store
+                unsigned r2 = __ballot_sync(0xFFFFFFFF, (T)Cm[0]>0?1:0);
+                Csub[warpid] = (__brev(r2) & (~mask[bx*32+warpid]));
+            }
         }
     }
 }
 
 // test new thread model
 template <typename Index, typename T>
-__global__ void bmv32_sparse_bin_masked(const unsigned* __restrict__ A, const unsigned* __restrict__ B, unsigned* C,
+__global__ void bmv32_sparse_bin_masked_v1(const unsigned* __restrict__ A, const unsigned* __restrict__ B, unsigned* C,
                                         const Index* __restrict__ rowptr, const Index* __restrict__ colind,
                                         const Index nblockrows, const unsigned* __restrict__ mask)
 {
@@ -685,11 +733,111 @@ __global__ void bmv32_sparse_bin_masked(const unsigned* __restrict__ A, const un
                     if (discoverable == 0xFFFFFFFF) break;
                 }
             }
-        }
-
-        C[row] |= discoverable;
+            C[row] = (discoverable & (~mask[row]));
+        } 
     }
 }
+
+// test 32 thrd per warp
+template <typename Index, typename T>
+__global__ void bmv32_sparse_bin_masked_v3(const unsigned* __restrict__ A, const unsigned* __restrict__ B, unsigned* C,
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                                        const Index nblockrows, const unsigned* __restrict__ mask)
+{
+    const unsigned row = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+
+    if (row < nblockrows) {
+
+        unsigned val = mask[row];
+
+        if (val == 0xFFFFFFFF) {
+        } else {
+            Index row_start = rowptr[row];
+            Index row_end = rowptr[row+1];
+            GET_LANEID;
+            unsigned Cm[1] = {0};
+
+            for(; row_start < row_end; row_start++) {
+                Index col_ind = colind[row_start];
+                val = mask[col_ind];
+
+                if (val != 0xFFFFFFFF) {
+                    unsigned r0;
+                    unsigned r1 = B[col_ind];
+
+                    r0 = A[row_start*32+laneid];
+                    Cm[0] += __popc(r0 & r1);
+
+                    // // early exit
+                    // discoverable |= Cm;
+                    // if (discoverable == 0xFFFFFFFF) break;
+                }
+            }
+
+            // store
+            unsigned r2 = __ballot_sync(0xFFFFFFFF, (T)(Cm[0])>0?1:0);
+            C[row] = (__brev(r2) & (~mask[row]));
+        } 
+    }
+}
+
+//1024 thrd per tb
+template <typename Index, typename T>
+__global__ void bmv32_sparse_bin_masked_v5(const unsigned* __restrict__ A, const unsigned* __restrict__ B, unsigned* C,
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                                        const Index nblockrows, const unsigned* __restrict__ mask)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*32 <= nblockrows) {
+        // compute
+        // we got 32 warp to process 32 * 1 blockrow,
+        // resulting 32*32 rows
+
+        // load
+        unsigned row = bx*32+tid/32;
+
+        if (row<nblockrows) {
+           unsigned val = mask[row];
+           
+
+            if (val == 0xFFFFFFFF) {
+            } else {
+                Index row_start = rowptr[row];
+                Index row_end = rowptr[row+1];
+
+                GET_LANEID;
+                const unsigned warpid = (tid >> 5);
+
+                unsigned Cm[1] = {0};
+                for(; row_start < row_end; row_start++) {
+                    Index col_ind = colind[row_start];
+                    val = mask[col_ind];
+
+                    if (val != 0xFFFFFFFF) {
+                        unsigned r0;
+                        unsigned r1 = B[col_ind];
+
+                        r0 = A[row_start*32+laneid];
+                        Cm[0] += __popc(r0 & r1);
+
+                        // // early exit
+                        // discoverable |= Cm;
+                        // if (discoverable == 0xFFFFFFFF) break;
+                    }
+                }
+
+                // store
+                unsigned r2 = __ballot_sync(0xFFFFFFFF, (T)(Cm[0])>0?1:0);
+                C[row] = (__brev(r2) & (~mask[row]));
+            }
+
+        }
+
+    }
+}
+
 
 __global__ void reduce_naive(const unsigned* __restrict__ vec, const int N, int* succptr) {
     int count = 0;
@@ -697,13 +845,239 @@ __global__ void reduce_naive(const unsigned* __restrict__ vec, const int N, int*
         count += __popc(vec[i]);
     }
     *succptr = count;
-    //printf("count: %d\n", count);
+    // printf("count: %d\n", count);
 }
 
 __global__ void reduce(const unsigned* __restrict__ vec, const int N, int* succptr) {
 
     if(blockIdx.x*1024+threadIdx.x < N) atomicAdd(succptr, __popc(vec[blockIdx.x*1024+threadIdx.x]));
 }
+
+__global__ void OR(unsigned* vec1, const int N, const unsigned* __restrict__ vec2) {
+    if (blockIdx.x*1024+threadIdx.x < N) vec1[blockIdx.x*1024+threadIdx.x] |= vec2[blockIdx.x*1024+threadIdx.x];
+}
+
+__global__ void fillZero(unsigned* vec, const int N) {
+    if (blockIdx.x*1024+threadIdx.x < N) vec[blockIdx.x*1024+threadIdx.x] = 0;
+}
+
+__global__ void resetSuccptr(int* succptr) {
+    succptr[0] = 0;
+}
+
+__global__ void Mask(unsigned* vec1, const int N, const unsigned* __restrict__ vec2) {
+    for(int i=0; i<N; i++) {
+        vec1[i] &= (~vec2[i]);
+    }
+}
+
+//======================================================================================
+// sssp.cu
+//======================================================================================
+
+__global__ void fillMax(unsigned* vec, const int N, const unsigned maxval) {
+    if (blockIdx.x*1024+threadIdx.x < N) vec[blockIdx.x*1024+threadIdx.x] = maxval;
+}
+
+__global__ void setSource(unsigned* vec, const int s) {
+    vec[s] = 0;
+}
+
+__global__ void resetSuccptrUnsigned(unsigned* succptr) {
+    succptr[0] = 0.f;
+}
+
+__global__ void fillValUnsigned(unsigned* vec, const int N, const unsigned val) {
+    if (blockIdx.x*1024+threadIdx.x < N) vec[blockIdx.x*1024+threadIdx.x] = val;
+}
+
+__global__ void reduceAddUnsigned(unsigned* resptr, const int N, const unsigned* vec) {
+    if (blockIdx.x*1024+threadIdx.x < N) atomicAdd(resptr, (vec[blockIdx.x*1024+threadIdx.x] != 2147483647) ? vec[blockIdx.x*1024+threadIdx.x] : 0);
+}
+
+// 32 trd per warp
+template <typename Index, typename T>
+__global__ void bmv32_sparse_full_minplus(const unsigned* __restrict__ A, const T* __restrict__ B, T* C,
+                                  const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*16 <= nblockrows) {
+        // compute
+        // we got 32 warp to process 32 * 1 blockrow,
+        // resulting 32*32 rows
+
+        // load
+        GET_LANEID;
+        const unsigned warpid = (tid >> 5);
+
+        if (bx*16+tid/32<nblockrows) {
+
+            int row_start, row_end, load=0;
+            row_start = rowptr[bx*16+tid/32];
+            row_end = rowptr[bx*16+tid/32+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const unsigned* Asub = &(A[row_start*32]);
+                const T* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*512]);
+                T minval = 2147483647;
+
+                #pragma unroll
+                for(int i=0; i<load; i++) {
+                    unsigned r0 = Asub[i*32+laneid];
+
+                    #pragma unroll
+                    for(int j=0; j<32; j++) {
+                        int b_ind = (colindsub[i])*32+j;
+                        T f1 = Bsub[b_ind]; // vector
+
+                        /* relax the binary matrix */
+                        T f2; // matrix
+                        if ((r0>>(31-j)) & 0x1 == 0) {
+                            if (b_ind == bx*16+tid/32+laneid) f2 = 0;
+                            else f2 = 2147483647;
+                        } else {
+                            if (b_ind == bx*16+tid/32+laneid) f2 = 0;
+                            else f2 = 1;
+                        }
+
+                        T res = (f1 == 2147483647 || f2 == 2147483647) ? 2147483647 : f1+f2;
+//                        printf("f1+f2:%d\n", res);
+                        minval = min(res, minval);
+                    }
+                }
+
+                // store
+//                if (minval == 1) printf("minval: %d, ind: %d\n", minval, warpid*32+laneid);
+                Csub[warpid*32+laneid] = min(Csub[warpid*32+laneid], minval);
+            }
+        }
+    }
+}
+
+__global__ void ewiseLess(unsigned* resvec, const int N, const unsigned* vec1, const unsigned* vec2) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (unsigned)(vec1[blockIdx.x*1024+threadIdx.x] > vec2[blockIdx.x*1024+threadIdx.x]);
+}
+
+__global__ void ewiseMin(unsigned* resvec, const int N, const unsigned* vec1, const unsigned* vec2) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = min(vec1[blockIdx.x*1024+threadIdx.x], vec2[blockIdx.x*1024+threadIdx.x]);
+}
+
+__global__ void assignMax(unsigned* resvec, const int N, const unsigned* mask, const unsigned maxval) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (mask[blockIdx.x*1024+threadIdx.x] == 0) ? maxval : resvec[blockIdx.x*1024+threadIdx.x];
+}
+
+//======================================================================================
+// pr.cu
+//======================================================================================
+// bin (A) * full (B) = full (C)
+// 1024 trd per warp
+template <typename Index, typename T>
+__global__ void bmv32_sparse_full(const unsigned* __restrict__ A, const T* __restrict__ B, T* C,
+                                  const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                                  const Index nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*32 <= nblockrows) {
+        // compute
+        // we got 32 warp to process 32 * 1 blockrow,
+        // resulting 32*32 rows
+
+        // load
+        GET_LANEID;
+        const unsigned warpid = (tid >> 5);
+
+        if (bx*32+tid/32<nblockrows) {
+
+            int row_start, row_end, load=0;
+            row_start = rowptr[bx*32+tid/32];
+            row_end = rowptr[bx*32+tid/32+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const unsigned* Asub = &(A[row_start*32]);
+                const T* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*1024]);
+                register unsigned Cm[32] = {0};
+                T sum = 0;
+
+                #pragma unroll
+                for(int i=0; i<load; i++) {
+                    unsigned r0 = Asub[i*32+laneid];
+
+                    #pragma unroll
+                    for(int j=0; j<32; j++) {
+                        T f1 = Bsub[(colindsub[i])*32+j];
+                        Cm[j] +=(((r0>>(31-j))&0x1)?f1:0);
+                    }
+                }
+
+                // store
+                for(int j=0; j<32; j++) sum += Cm[j];
+                Csub[warpid*32+laneid] += sum; // <--
+            }
+        }
+    }
+}
+
+__global__ void fillVal(float* vec, const int N, const float val) {
+    if (blockIdx.x*1024+threadIdx.x < N) vec[blockIdx.x*1024+threadIdx.x] = val;
+}
+
+// resvec += (vec + val)
+__global__ void ewiseAddVal(float* resvec, const int N, const float* vec, const float val) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] += vec[blockIdx.x*1024+threadIdx.x] + val;
+}
+
+// resvec += (vec1-vec2)
+__global__ void ewiseSubVec(float* resvec, const int N, const float* vec1, const float* vec2) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] += (vec1[blockIdx.x*1024+threadIdx.x] - vec2[blockIdx.x*1024+threadIdx.x]);
+}
+
+// resvec *= (vec1*vec2)
+__global__ void ewiseMul(float* resvec, const int N, const float* vec1, const float* vec2) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] *= (vec1[blockIdx.x*1024+threadIdx.x] * vec2[blockIdx.x*1024+threadIdx.x]);
+}
+
+__global__ void reduceAdd(float* resptr, const int N, const float* vec) {
+    if (blockIdx.x*1024+threadIdx.x < N) atomicAdd(resptr, vec[blockIdx.x*1024+threadIdx.x]);
+}
+
+//======================================================================================
+// cc.cu
+//======================================================================================
+//// resvec = min(vec1, vec2)
+//__global__ void ewiseMin(float* resvec, const int N, const float* vec1, const float* vec2) {
+//    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = min(vec1[blockIdx.x*1024+threadIdx.x], vec2[blockIdx.x*1024+threadIdx.x]);
+//}
+
+// f[f[u]] = mngf[u]
+__global__ void assignScatter(float* resvec, const int N, const float* vec1, const float* vec2) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[(int)(vec2[blockIdx.x*1024+threadIdx.x])] = vec1[blockIdx.x*1024+threadIdx.x];
+}
+
+// gf[u] = f[f[u]]
+__global__ void extractGather(float* resvec, const int N, const float* vec) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = vec[(int)(vec[blockIdx.x*1024+threadIdx.x])];
+}
+
+// resvec = vec1 != vec2
+__global__ void ewiseNotEqual(float* resvec, const int N, const float* vec1, const float* vec2) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (float)(vec1[blockIdx.x*1024+threadIdx.x] != vec2[blockIdx.x*1024+threadIdx.x]);
+}
+
+//// assign
+//__global__ void assignMax(float* resvec, const int N, const float* vec, const float val) {
+//    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = vec[blockIdx.x*1024+threadIdx.x] ? val : 0;
+//}
+
 
 //======================================================================================
 // new model -- more warps in a thread block

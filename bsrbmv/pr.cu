@@ -1,7 +1,7 @@
 #include <iostream>
 #include <sys/time.h>
 
-#define TEST_TIMES 10000
+#define MAX_ITER 10
 using namespace std;
 
 #include <cuda.h>
@@ -88,10 +88,6 @@ int main32(int argc, char* argv[])
     unsigned bytes = (nblocks * blocksize * 4 + (nblockrows+1+nblocks) * 4);
     printf("bsr total size: "); printBytes(bytes); printf("\n");
 
-    
-
-
-
     // csr2csc for B as A^T
     int* cscRowInd, *cscColPtr;
     float* cscVal;
@@ -131,73 +127,57 @@ int main32(int argc, char* argv[])
     free(h_cscColPtr);
 
     // ============================================= input vector storage
-    // generate random vector
-    srand(time(0));
-	float *B = (float*)malloc((nblockrows * blocksize) * 1 * sizeof(float));
-//	for (int i = 0; i < (nblockrows * blocksize) * 1; i ++)
-//    {
-//        float x = (float)rand() / RAND_MAX;
-//        if (i >= ncols) B[i] = 0;
-//        else B[i] = (x > 0.5) ? 1 : 0;
-//    }
-    for(int i=0 ;i<(nblockrows * blocksize); i++) B[i] = 0;
-    B[0] = 1;
 
-#ifdef VERBOSE
-    printf("initialize a vector with size %d x 1\n", (nblockrows * blocksize));
-//    printf("orivec: \n"); printHostVec(B, (nblockrows * blocksize));
-#endif
-
-    // copy to device
-	float *fB;
-	cudaMalloc(&fB, (nblockrows * blocksize) * 1 * sizeof(float));
-	cudaMemcpy(fB, B, (nblockrows * blocksize) * 1 * sizeof(float), cudaMemcpyHostToDevice);
-
-    // pack B
-    unsigned *tB;
-    cudaMalloc(&tB, nblockrows * 1 * sizeof(unsigned)); // (nblockrows * blocksize) / 32 = nblockrows
-
-    // get gridDim, this is to avoid nblockrows being larger than MAX_gridDim (65535?!)
+   // get gridDim, this is to avoid nblockrows being larger than MAX_gridDim (65535?!)
     int gridDim = (int)ceil(cbrt((double)nblockrows));
     dim3 grid(gridDim, gridDim, gridDim);
 
-#ifdef VERBOSE
-    printf("cbrt(nblockrows) = %d\n", gridDim);
-#endif
-
-    ToBit32Row<float><<<grid, 32>>>(fB, tB, nblockrows * blocksize, 1, nblockrows); // dense vector
-
-
     // ============================================= BSTC-32 bsr bmv
+    // pagerank vector (p)
+    // p fill with 1/nrows
+    float* p;
+    cudaMalloc((void**)&p, nblockrows * blocksize * sizeof(float));
+    fillVal<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(p, nblockrows * blocksize, 1.f/nrows);
 
-    // init frontier
-    unsigned *frontier1;
-    cudaMalloc((void**)&frontier1, nblockrows * sizeof(unsigned));
-    setDeviceValArr<int, unsigned><<<1,1>>>(frontier1, nblockrows, 0);
-    cudaMemcpy(frontier1, tB, nblockrows * sizeof(unsigned), cudaMemcpyDeviceToDevice);
+    // previous pagerank vector (p_prev)
+    float* p_prev;
+    cudaMalloc((void**)&p_prev, nblockrows * blocksize * sizeof(float));
+    setDeviceValArr<int, float><<<1,1>>>(p_prev, nblockrows * blocksize , 0);
 
-    unsigned* frontier2;
-    cudaMalloc((void**)&frontier2, nblockrows * sizeof(unsigned));
-    setDeviceValArr<int, unsigned><<<1,1>>>(frontier2, nblockrows, 0);
+    // temporary pagerank (p_swap)
+    float* p_swap;
+    cudaMalloc((void**)&p_swap, nblockrows * blocksize * sizeof(float));
+    setDeviceValArr<int, float><<<1,1>>>(p_swap, nblockrows * blocksize , 0);
 
-    unsigned* temp;
-    cudaMalloc((void**)&temp, nblockrows * sizeof(unsigned));
-    setDeviceValArr<int, unsigned><<<1,1>>>(temp, nblockrows, 0);
+    // residual vector (r)
+    // fill r with 1.f
+    float* r;
+    cudaMalloc((void**)&r, nblockrows * blocksize * sizeof(float));
+    fillVal<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(r, nblockrows * blocksize, 1.f);
 
-    unsigned* visited;
-    cudaMalloc((void**)&visited, nblockrows * sizeof(unsigned));
-    
+    // temporary residual (r_temp)
+    float* r_temp;
+    cudaMalloc((void**)&r_temp, nblockrows * blocksize * sizeof(float));
+    setDeviceValArr<int, float><<<1,1>>>(r_temp, nblockrows * blocksize , 0);
+
+    float error_last = 0.f;
+    float error = 1.f;
+    int unvisited = nrows;
+
+    // PageRank Parameters
+    float alpha = 0.85;
+    float eps   = 1e-8;
+
+    float* errorptr;
+    cudaMalloc((void**)&errorptr, sizeof(float));
 
     int gridDim_new = (int)ceil(cbrt((double)nblockrows/32));
     dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
 
-
     printf("nrows: %d\n", nrows);
     printf("------------------------------------\n");
-    int succ = 0, prev_succ = 0;
-    int *succptr;
-    cudaMalloc((void**)&succptr, sizeof(int));
-    int i;
+
+    int iter;
 
      dim3 NT, NB;
      int nt = 1024;
@@ -208,21 +188,19 @@ int main32(int argc, char* argv[])
      NB.y = 1;
      NB.z = 1;
 
-     int zero = 0;
-
-
-
     // ------
     GpuTimer bmvbin_timer;
     double bmvbin32_time;
     bmvbin_timer.Start();
 
-    for (i=0; i<TEST_TIMES; i++) {
+    for (iter=1; error > eps && iter<=MAX_ITER; iter++) {
 
-       // assign new nodes to visited
-       OR<<<(int)ceil(nblockrows/1024.0), 1024>>>(visited, nblockrows, frontier1);
+        //
+        unvisited -= (int)(error);
+        error_last = error;
+        cudaMemcpy(p_prev, p, nblockrows * blocksize * sizeof(float), cudaMemcpyDeviceToDevice);
 
-       // frontier2 = A * frontier1, mask = visited
+       // vxm: p = A*p + (1-alpha)*1
        // solution 1
        // bmvbin_timer.Start();
        // bmv32_sparse_bin_masked_v1<int, float><<<NB, NT>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
@@ -245,7 +223,7 @@ int main32(int argc, char* argv[])
 
        // solution 4
        // bmvbin_timer.Start();
-       bmv32_sparse_bin_masked_v4<int, float><<<grid_new, 1024>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
+       bmv32_sparse_full<int, float><<<grid_new, 1024>>>(tA, p, p_swap, new_bsrRowPtr, new_bsrColInd, nblockrows);
        // bmvbin_timer.Stop();
        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
@@ -255,34 +233,34 @@ int main32(int argc, char* argv[])
        // bmvbin_timer.Stop();
        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
-       // swap frontier 1 and frontier2, frontier2 fill 0
-       cudaMemcpy(frontier1, frontier2, nblockrows * sizeof(unsigned), cudaMemcpyDeviceToDevice);
-       fillZero<<<(int)ceil(nblockrows/1024.0), 1024>>>(frontier2, nblockrows);
-       // printf("result_bsrbmv32-bin: \n"); printBin32Vec<<<1,1>>>(frontier1, nblockrows);
-       
-       
-       // get succ by reduce frontier1
-       resetSuccptr<<<1,1>>>(succptr); //<-- use together with reduce
-       reduce<<<(int)ceil(nblockrows/1024.0), 1024>>>(frontier1, nblockrows, succptr);
-       // reduce_naive<<<1,1>>>(frontier1, nblockrows, succptr);
-       cudaMemcpy(&succ, succptr, sizeof(int), cudaMemcpyDeviceToHost);
-       // printf("succ: %d\n", succ); // <-- print will slow down some time
-       
-       // terminate condition
-       if (succ == 0) break;
+
+        // ewise add p += p_swap + (1-alpha)/nrows
+        ewiseAddVal<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(p, nblockrows*blocksize, p_swap, (1.f-alpha)/nrows);
+
+        // error = l2loss(p, p_prev)
+        // r += p-pprev
+        ewiseSubVec<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(r, nblockrows*blocksize, p, p_prev);
+
+        // r_temp *= r * r
+        ewiseMul<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(r_temp, nblockrows*blocksize, r, r);
+
+        // reduce rtemp to error
+        reduceAdd<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(errorptr, nblockrows*blocksize, r_temp);
+        cudaMemcpy(&error, errorptr, sizeof(int), cudaMemcpyDeviceToHost);
+
+        error = sqrt(error);
+        printf("error: %d\n", error_last);
     }
 
     bmvbin_timer.Stop();
     bmvbin32_time = bmvbin_timer.ElapsedMillis();
 
     printf("------------------------------------\n");
-    int niter = i+1; printf("niter: %d\n", niter);
+    int niter = iter; printf("niter: %d\n", niter);
     // ------
-
 
     // free storage
     cudaFree(tA);
-    cudaFree(tB);
 
 #ifdef VERBOSE
 //    printf("result_bsrbmv32: \n"); printResVec<float><<<1,1>>>(fC, nrows);
@@ -308,8 +286,6 @@ int main32(int argc, char* argv[])
     cudaFree(csrRowPtr);
     cudaFree(csrColInd);
     cudaFree(csrVal);
-
-    cudaFree(fB);
 }
 
 int main(int argc, char* argv[])
