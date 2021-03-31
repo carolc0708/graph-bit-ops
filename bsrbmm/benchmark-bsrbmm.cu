@@ -1167,15 +1167,15 @@ int *runtime;
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-        bmm32_sparse<int, int><<<grid, 32>>>(tA, tB, fC,
-                                               A_bsrRowPtr, A_bsrColInd,
-                                               B_bsrRowPtr, B_bsrColInd,
-                                               nblockrows, nblocks, nrows, runtime);
+//        bmm32_sparse<int, int><<<grid, 32>>>(tA, tB, fC,
+//                                               A_bsrRowPtr, A_bsrColInd,
+//                                               B_bsrRowPtr, B_bsrColInd,
+//                                               nblockrows, nblocks, nrows, runtime);
 
-//        bmm32_sparse_masked<int, int><<<grid, 32>>>(tA, tB, fC,
-//                                                   A_bsrRowPtr, A_bsrColInd,
-//                                                   B_bsrRowPtr, B_bsrColInd,
-//                                                   nblockrows, nblocks, nrows);
+        bmm32_sparse_masked<int, int><<<grid, 32>>>(tA, tB, fC,
+                                                   A_bsrRowPtr, A_bsrColInd,
+                                                   B_bsrRowPtr, B_bsrColInd,
+                                                   nblockrows, nblocks, nrows);
     }
 
     bmm_timer.Stop();

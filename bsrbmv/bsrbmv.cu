@@ -250,6 +250,9 @@ __global__ void ToBit64Row(const T* __restrict__  A, ullong* B, const int A_heig
     }
 }
 
+//======================================================================================
+// baseline
+//======================================================================================
 // process consecutive 8 blockrows at a time, result in 32 consecutive rows
 template <typename Index, typename T>
 __global__ void bmv4_sparse(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
@@ -895,25 +898,20 @@ __global__ void reduceAddUnsigned(unsigned* resptr, const int N, const unsigned*
     if (blockIdx.x*1024+threadIdx.x < N) atomicAdd(resptr, (vec[blockIdx.x*1024+threadIdx.x] != 2147483647) ? vec[blockIdx.x*1024+threadIdx.x] : 0);
 }
 
-// 32 trd per warp
+// 512 trd per warp
 template <typename Index, typename T>
 __global__ void bmv32_sparse_full_minplus(const unsigned* __restrict__ A, const T* __restrict__ B, T* C,
-                                  const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     const unsigned tid = threadIdx.x;
 
     if (bx*16 <= nblockrows) {
-        // compute
-        // we got 32 warp to process 32 * 1 blockrow,
-        // resulting 32*32 rows
 
         // load
         GET_LANEID;
         const unsigned warpid = (tid >> 5);
-
         if (bx*16+tid/32<nblockrows) {
-
             int row_start, row_end, load=0;
             row_start = rowptr[bx*16+tid/32];
             row_end = rowptr[bx*16+tid/32+1];
@@ -937,30 +935,33 @@ __global__ void bmv32_sparse_full_minplus(const unsigned* __restrict__ A, const 
 
                         /* relax the binary matrix */
                         T f2; // matrix
-                        if ((r0>>(31-j)) & 0x1 == 0) {
-                            if (b_ind == bx*16+tid/32+laneid) f2 = 0;
+                        if (((r0>>(31-j)) & 0x1) == 0) {
+                            if (b_ind == bx*512+warpid*32+laneid) f2 = 0;
                             else f2 = 2147483647;
                         } else {
-                            if (b_ind == bx*16+tid/32+laneid) f2 = 0;
+                            if (b_ind == bx*512+warpid*32+laneid) f2 = 0;
                             else f2 = 1;
                         }
 
-                        T res = (f1 == 2147483647 || f2 == 2147483647) ? 2147483647 : f1+f2;
-//                        printf("f1+f2:%d\n", res);
+                        T res = (f1 == 2147483647 || f2 == 2147483647) ? 2147483647 : (f1+f2);
+    //                        printf("f1+f2:%d\n", res);
                         minval = min(res, minval);
                     }
                 }
 
                 // store
-//                if (minval == 1) printf("minval: %d, ind: %d\n", minval, warpid*32+laneid);
-                Csub[warpid*32+laneid] = min(Csub[warpid*32+laneid], minval);
+    //                printf("bx*16+tid/32:%d, minval: %d\n", bx*16+tid/32, minval);
+    //                printf("row: %d, minval: %d\n", bx*512+warpid*32+laneid, minval);
+                Csub[warpid*32+laneid] = minval;
             }
         }
+
     }
+
 }
 
 __global__ void ewiseLess(unsigned* resvec, const int N, const unsigned* vec1, const unsigned* vec2) {
-    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (unsigned)(vec1[blockIdx.x*1024+threadIdx.x] > vec2[blockIdx.x*1024+threadIdx.x]);
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (unsigned)(vec1[blockIdx.x*1024+threadIdx.x] < vec2[blockIdx.x*1024+threadIdx.x]);
 }
 
 __global__ void ewiseMin(unsigned* resvec, const int N, const unsigned* vec1, const unsigned* vec2) {
@@ -975,53 +976,58 @@ __global__ void assignMax(unsigned* resvec, const int N, const unsigned* mask, c
 // pr.cu
 //======================================================================================
 // bin (A) * full (B) = full (C)
-// 1024 trd per warp
+// 512 trd per warp
 template <typename Index, typename T>
 __global__ void bmv32_sparse_full(const unsigned* __restrict__ A, const T* __restrict__ B, T* C,
                                   const Index* __restrict__ rowptr, const Index* __restrict__ colind,
-                                  const Index nblockrows)
+                                  const Index nblockrows, const Index* csrrowptr, const float alpha)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     const unsigned tid = threadIdx.x;
 
-    if (bx*32 <= nblockrows) {
+    if (bx*16 <= nblockrows) {
         // compute
-        // we got 32 warp to process 32 * 1 blockrow,
-        // resulting 32*32 rows
 
         // load
         GET_LANEID;
         const unsigned warpid = (tid >> 5);
 
-        if (bx*32+tid/32<nblockrows) {
+        if (bx*16+tid/32<nblockrows) {
 
             int row_start, row_end, load=0;
-            row_start = rowptr[bx*32+tid/32];
-            row_end = rowptr[bx*32+tid/32+1];
+            row_start = rowptr[bx*16+tid/32];
+            row_end = rowptr[bx*16+tid/32+1];
             load = row_end-row_start;
 
             if (load != 0) {
                 const unsigned* Asub = &(A[row_start*32]);
                 const T* Bsub = &(B[0]);
                 const int* colindsub = &(colind[row_start]);
-                T* Csub = &(C[bx*1024]);
-                register unsigned Cm[32] = {0};
+                T* Csub = &(C[bx*512]);
                 T sum = 0;
 
                 #pragma unroll
                 for(int i=0; i<load; i++) {
                     unsigned r0 = Asub[i*32+laneid];
 
+
                     #pragma unroll
                     for(int j=0; j<32; j++) {
-                        T f1 = Bsub[(colindsub[i])*32+j];
-                        Cm[j] +=(((r0>>(31-j))&0x1)?f1:0);
+                        Index jind = (colindsub[i])*32+j;
+                        T f1 = Bsub[jind];
+                        Index nnz = (csrrowptr[jind+1]-csrrowptr[jind]);
+
+                        sum +=(((r0>>(31-j))&0x1)?(alpha*f1/nnz):0);
+
+//                        if (((r0>>(31-j))&0x1)) {
+//                            printf("%.3f, %d\n", f1, nnz);
+//                        }
+
                     }
                 }
 
                 // store
-                for(int j=0; j<32; j++) sum += Cm[j];
-                Csub[warpid*32+laneid] += sum; // <--
+                Csub[warpid*32+laneid] = sum;
             }
         }
     }
@@ -1031,23 +1037,28 @@ __global__ void fillVal(float* vec, const int N, const float val) {
     if (blockIdx.x*1024+threadIdx.x < N) vec[blockIdx.x*1024+threadIdx.x] = val;
 }
 
-// resvec += (vec + val)
+// resvec = (vec + val)
 __global__ void ewiseAddVal(float* resvec, const int N, const float* vec, const float val) {
-    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] += vec[blockIdx.x*1024+threadIdx.x] + val;
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = vec[blockIdx.x*1024+threadIdx.x] + val;
 }
 
-// resvec += (vec1-vec2)
+// resvec = (vec1-vec2)
 __global__ void ewiseSubVec(float* resvec, const int N, const float* vec1, const float* vec2) {
-    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] += (vec1[blockIdx.x*1024+threadIdx.x] - vec2[blockIdx.x*1024+threadIdx.x]);
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (vec1[blockIdx.x*1024+threadIdx.x] - vec2[blockIdx.x*1024+threadIdx.x]);
 }
 
-// resvec *= (vec1*vec2)
+// resvec = (vec1*vec2)
 __global__ void ewiseMul(float* resvec, const int N, const float* vec1, const float* vec2) {
-    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] *= (vec1[blockIdx.x*1024+threadIdx.x] * vec2[blockIdx.x*1024+threadIdx.x]);
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (vec1[blockIdx.x*1024+threadIdx.x] * vec2[blockIdx.x*1024+threadIdx.x]);
 }
 
 __global__ void reduceAdd(float* resptr, const int N, const float* vec) {
     if (blockIdx.x*1024+threadIdx.x < N) atomicAdd(resptr, vec[blockIdx.x*1024+threadIdx.x]);
+}
+
+
+__global__ void resetErrorptr(float* errorptr) {
+    errorptr[0] = 0;
 }
 
 //======================================================================================

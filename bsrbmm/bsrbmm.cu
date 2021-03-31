@@ -557,6 +557,7 @@ __global__ void bmm64_sparse(const ullong* __restrict__ A, const ullong* __restr
 //======================================================================================
 // Mask function
 //======================================================================================
+// Cik = Sum(A_ij * B_jk) * A_ik
 template <typename Index, typename T>
 __global__ void bmm32_sparse_masked(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
             const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
@@ -570,6 +571,7 @@ __global__ void bmm32_sparse_masked(const unsigned* __restrict__ A, const unsign
 
         int sum = 0;
         bool mask = false;
+        unsigned m = 0;
 
         // load
         int A_row_start = A_rowptr[bx]; // 0 32 64 . . . 991
@@ -587,24 +589,28 @@ __global__ void bmm32_sparse_masked(const unsigned* __restrict__ A, const unsign
                 /* checking mask */
                 int B_col = B_colind[j];
                 #pragma unroll
-                for(int l=A_row_start; l<A_row_end; l++) { if (B_col == A_colind[l]) mask = true; }
+                for(int l=A_row_start; l<A_row_end; l++) { // A_ik
+                    if (A_colind[l] == B_col) {
+                        mask = true;
+                        m = Asub[(l-A_row_start)*32+laneid];
+                        break;
+                    }
+                }
                 /* checking mask */
 
                 if (mask) {
                     unsigned r1 = Bsub[(j-B_row_start)*32+laneid];
-                    unsigned Cm = 0;
+                    unsigned register Cm[32] = {0};
 
                     /* bmm */
                     #pragma unroll
                     for (int k=0; k<32; k++)
                     {
-                        unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k); //from lane-j, r1 of matrix B
-                        Cm = Cm << 1 | (__popc(r0 & r2) > 0 ? 1 : 0); // each lane dot-product with the column of B
+                        unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k);
+                        Cm[k] = __popc(r0 & r2);
+                        sum += (int)(((m>>(31-k))&0x1)?Cm[k]:0); // masking
                     }
                     /* bmm */
-
-                    /* mask */
-                    sum += (int)(__popc(Cm & r0));
 
                     /* reset mask */
                     mask = false;

@@ -137,7 +137,7 @@ int main32(int argc, char* argv[])
     // p fill with 1/nrows
     float* p;
     cudaMalloc((void**)&p, nblockrows * blocksize * sizeof(float));
-    fillVal<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(p, nblockrows * blocksize, 1.f/nrows);
+    setDeviceValArr<int, float><<<1,1>>>(p, nblockrows * blocksize , 1.0/nrows);
 
     // previous pagerank vector (p_prev)
     float* p_prev;
@@ -153,25 +153,25 @@ int main32(int argc, char* argv[])
     // fill r with 1.f
     float* r;
     cudaMalloc((void**)&r, nblockrows * blocksize * sizeof(float));
-    fillVal<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(r, nblockrows * blocksize, 1.f);
+    setDeviceValArr<int, float><<<1,1>>>(r, nblockrows * blocksize , 1.0);
 
     // temporary residual (r_temp)
     float* r_temp;
     cudaMalloc((void**)&r_temp, nblockrows * blocksize * sizeof(float));
     setDeviceValArr<int, float><<<1,1>>>(r_temp, nblockrows * blocksize , 0);
 
-    float error_last = 0.f;
-    float error = 1.f;
+    float error_last = 0.0;
+    float error = 1.0;
     int unvisited = nrows;
 
     // PageRank Parameters
     float alpha = 0.85;
-    float eps   = 1e-8;
+    float eps   = 0.000000001;
 
     float* errorptr;
     cudaMalloc((void**)&errorptr, sizeof(float));
 
-    int gridDim_new = (int)ceil(cbrt((double)nblockrows/32));
+    int gridDim_new = (int)ceil(cbrt((double)nblockrows/16));
     dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
 
     printf("nrows: %d\n", nrows);
@@ -198,7 +198,9 @@ int main32(int argc, char* argv[])
         //
         unvisited -= (int)(error);
         error_last = error;
-        cudaMemcpy(p_prev, p, nblockrows * blocksize * sizeof(float), cudaMemcpyDeviceToDevice);
+        //p_prev = p;
+        setDeviceValArr<int, float><<<1,1>>>(p_prev, nblockrows * blocksize , 0);
+        cudaMemcpy(p_prev, p, nrows * sizeof(float), cudaMemcpyDeviceToDevice);
 
        // vxm: p = A*p + (1-alpha)*1
        // solution 1
@@ -221,9 +223,10 @@ int main32(int argc, char* argv[])
        // bmvbin_timer.Stop();
        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
+
        // solution 4
        // bmvbin_timer.Start();
-       bmv32_sparse_full<int, float><<<grid_new, 1024>>>(tA, p, p_swap, new_bsrRowPtr, new_bsrColInd, nblockrows);
+       bmv32_sparse_full<int, float><<<grid_new, 512>>>(tA, p_prev, p_swap, new_bsrRowPtr, new_bsrColInd, nblockrows, csrRowPtr, alpha);
        // bmvbin_timer.Stop();
        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
@@ -234,22 +237,26 @@ int main32(int argc, char* argv[])
        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
 
-        // ewise add p += p_swap + (1-alpha)/nrows
-        ewiseAddVal<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(p, nblockrows*blocksize, p_swap, (1.f-alpha)/nrows);
+        // ewise add p = p_swap + (1-alpha)/nrows
+        ewiseAddVal<<<(int)ceil(nrows/1024.0), 1024>>>(p, nrows, p_swap, (1.0-alpha)/nrows);
 
         // error = l2loss(p, p_prev)
-        // r += p-pprev
-        ewiseSubVec<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(r, nblockrows*blocksize, p, p_prev);
+        // r = p-pprev
+        ewiseSubVec<<<(int)ceil(nrows/1024.0), 1024>>>(r, nrows, p, p_prev);
 
-        // r_temp *= r * r
-        ewiseMul<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(r_temp, nblockrows*blocksize, r, r);
+        // r_temp = r * r
+        ewiseMul<<<(int)ceil(nrows/1024.0), 1024>>>(r_temp, nrows, r, r);
 
         // reduce rtemp to error
-        reduceAdd<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(errorptr, nblockrows*blocksize, r_temp);
+        resetErrorptr<<<1,1>>>(errorptr);
+        reduceAdd<<<(int)ceil(nrows/1024.0), 1024>>>(errorptr, nrows, r_temp);
         cudaMemcpy(&error, errorptr, sizeof(int), cudaMemcpyDeviceToHost);
 
         error = sqrt(error);
-        printf("error: %d\n", error_last);
+        printf("error: %f\n", error_last);
+
+//        int k;
+//        std::cin >> k;
     }
 
     bmvbin_timer.Stop();

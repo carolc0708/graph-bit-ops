@@ -1110,6 +1110,9 @@ int main32(int argc, char* argv[])
     int gridDim_new = (int)ceil(cbrt((double)nblockrows/32));
     dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
 
+    int gridDim_new2 = (int)ceil(cbrt((double)nblockrows/2));
+    dim3 grid_new2(gridDim_new2, gridDim_new2, gridDim_new2);
+
     // ------
     GpuTimer bmv_timer;
     bmv_timer.Start();
@@ -1119,6 +1122,7 @@ int main32(int argc, char* argv[])
 //        bmv32_sparse<int, float><<<grid, 32>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
 //        bmv32_sparse_sharedvector<int, float><<<grid_new, 1024>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
         bmv32_sparse_new<int, float><<<grid_new, 1024>>>(tA, tB, fC, blocksize, nblocks, 1, bsrRowPtr, bsrColInd, nblockrows, nblocks);
+
     }
 
     bmv_timer.Stop();
