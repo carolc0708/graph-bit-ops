@@ -22,6 +22,10 @@ __device__ __inline__ void store128(const void* addr, T a, T b, T c, T d)
     *((float4*)addr) = make_float4(*(float*)(&a),*(float*)(&b),*(float*)(&c),*(float*)(&d));
 }
 
+//======================================================================================
+// bit-packing
+//======================================================================================
+
 // col-major packing bit 4
 template <typename T>
 __global__ void ToBit4Col(const T* __restrict__ A, uchar* B, const int nblocks)
@@ -264,7 +268,7 @@ __global__ void bmv4_sparse(const uchar* __restrict__ A, const uchar* __restrict
         // load
         GET_LANEID;
 
-        if (bx*8+laneid/8<nblockrows) {
+        if (bx*8+laneid/4<nblockrows) { //
             int row_start=0, row_end=0, load=0;
             row_start = rowptr[bx*8+laneid/4];
             row_end = rowptr[bx*8+laneid/4+1];
@@ -612,6 +616,85 @@ __global__ void bmv8_sparse_sharedallunsigned_multi(const unsigned* __restrict__
 //======================================================================================
 // bfs.cu
 //======================================================================================
+__global__ void printOneBin8Vec (const uchar packvec)
+{
+    uchar j;
+    for(j = 1 << 7; j > 0; j = j / 2)
+        (packvec & j) ? printf("1") : printf("0");
+    printf(" ");
+}
+
+__global__ void printOneBin32Vec (const unsigned packvec)
+{
+    unsigned j;
+    for(j = 1 << 31; j > 0; j = j / 2)
+        (packvec & j) ? printf("1") : printf("0");
+    printf(" ");
+}
+
+// 32 thread in a warp
+template <typename Index, typename T>
+__global__ void bmv4_sparse_bin_masked_v4(const uchar* __restrict__ A, const uchar* __restrict__ B, uchar* C,
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                                        const Index nblockrows, const uchar* __restrict__ mask)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*8 <= nblockrows) {
+        // compute
+
+        // load
+        GET_LANEID;
+        int row = bx*8+laneid/4;
+
+        if (row<nblockrows) {
+
+            int row_start, row_end, load=0;
+            row_start = rowptr[row];
+            row_end = rowptr[row+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const uchar* Asub = &(A[row_start*4]);
+                const uchar* Bsub = &(B[0]);
+                const Index* colindsub = &(colind[row_start]);
+                uchar* Csub = &(C[bx*8]);
+                register unsigned Cm[1] = {0};
+//                register unsigned a[4] = {0};
+//                register unsigned b[4] = {0};
+
+                #pragma unroll
+                for(int i=0; i<load; i+=1) { //(((load+4-1)/4)*4)
+                    unsigned r0 = Asub[i*4+laneid%4];
+                    unsigned r1 = Bsub[(colindsub[i])];
+                    Cm[0] += __popc(r0 & r1);
+
+//                    a[0] = (i*4+(laneid%4) < load*4 ? Asub[i*4+(laneid%4)] : 0) << 24;
+//                    a[1] = (i*4+4+(laneid%4) < load*4 ? Asub[i*4+4+(laneid%4)] : 0) << 16;
+//                    a[2] = (i*4+8+(laneid%4) < load*4 ? Asub[i*4+8+(laneid%4)] : 0) << 8;
+//                    a[3] = (i*4+12+(laneid%4) < load*4 ? Asub[i*4+12+(laneid%4)] : 0);
+//
+//                    b[0] = (i*4+(laneid%4) < load*4 ? Bsub[colind[row_start+i]] : 0) << 24;
+//                    b[1] = (i*4+4+(laneid%4) < load*4 ? Bsub[colind[row_start+i+1]] : 0) << 16;
+//                    b[2] = (i*4+8+(laneid%4) < load*4 ? Bsub[colind[row_start+i+2]] : 0) << 8;
+//                    b[3] = (i*4+12+(laneid%4) < load*4 ? Bsub[colind[row_start+i+3]] : 0);
+//
+//
+//                    Cm[0] += __popc((a[0]|a[1]|a[2]|a[3]) & (b[0]|b[1]|b[2]|b[3]));
+                }
+
+                // store
+                unsigned r2 = __ballot_sync(0xFFFFFFFF, Cm[0]>0?1:0);
+                uchar temp = (uchar)((((__brev(r2) >> (28-((laneid/4)*4))) & 0xF) & (~mask[row]))& 0x0F);
+
+//                printf("%d, %u\n", (laneid/4), temp);
+                Csub[(laneid/4)] = temp;
+            }
+        }
+    }
+}
+
 // result in binary
 template <typename Index, typename T>
 __global__ void bmv32_sparse_bin_masked_v2(const unsigned* __restrict__ A, const unsigned* __restrict__ B, unsigned* C,
@@ -851,16 +934,19 @@ __global__ void reduce_naive(const unsigned* __restrict__ vec, const int N, int*
     // printf("count: %d\n", count);
 }
 
-__global__ void reduce(const unsigned* __restrict__ vec, const int N, int* succptr) {
+template <typename T>
+__global__ void reduce(const T* __restrict__ vec, const int N, int* succptr) {
 
-    if(blockIdx.x*1024+threadIdx.x < N) atomicAdd(succptr, __popc(vec[blockIdx.x*1024+threadIdx.x]));
+    if(blockIdx.x*1024+threadIdx.x < N) atomicAdd(succptr, __popc((unsigned)vec[blockIdx.x*1024+threadIdx.x]));
 }
 
-__global__ void OR(unsigned* vec1, const int N, const unsigned* __restrict__ vec2) {
+template <typename T>
+__global__ void OR(T* vec1, const int N, const T* __restrict__ vec2) {
     if (blockIdx.x*1024+threadIdx.x < N) vec1[blockIdx.x*1024+threadIdx.x] |= vec2[blockIdx.x*1024+threadIdx.x];
 }
 
-__global__ void fillZero(unsigned* vec, const int N) {
+template <typename T>
+__global__ void fillZero(T* vec, const int N) {
     if (blockIdx.x*1024+threadIdx.x < N) vec[blockIdx.x*1024+threadIdx.x] = 0;
 }
 
@@ -868,7 +954,8 @@ __global__ void resetSuccptr(int* succptr) {
     succptr[0] = 0;
 }
 
-__global__ void Mask(unsigned* vec1, const int N, const unsigned* __restrict__ vec2) {
+template <typename T>
+__global__ void Mask(T* vec1, const int N, const T* __restrict__ vec2) {
     for(int i=0; i<N; i++) {
         vec1[i] &= (~vec2[i]);
     }
@@ -877,7 +964,6 @@ __global__ void Mask(unsigned* vec1, const int N, const unsigned* __restrict__ v
 //======================================================================================
 // sssp.cu
 //======================================================================================
-
 __global__ void fillMax(unsigned* vec, const int N, const unsigned maxval) {
     if (blockIdx.x*1024+threadIdx.x < N) vec[blockIdx.x*1024+threadIdx.x] = maxval;
 }
@@ -896,6 +982,100 @@ __global__ void fillValUnsigned(unsigned* vec, const int N, const unsigned val) 
 
 __global__ void reduceAddUnsigned(unsigned* resptr, const int N, const unsigned* vec) {
     if (blockIdx.x*1024+threadIdx.x < N) atomicAdd(resptr, (vec[blockIdx.x*1024+threadIdx.x] != 2147483647) ? vec[blockIdx.x*1024+threadIdx.x] : 0);
+}
+
+
+template <typename Index, typename T>
+__global__ void bmv4_sparse_full_minplus(const uchar* __restrict__ A, const T* __restrict__ B, T* C,
+                                         const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*8 <= nblockrows) {
+        // compute
+
+        // load
+        GET_LANEID;
+        int row = bx*8+laneid/4;
+
+        if (row<nblockrows) {
+            int row_start, row_end, load=0;
+            row_start = rowptr[row];
+            row_end = rowptr[row+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const uchar* Asub = &(A[row_start*4]);
+                const T* Bsub = &(B[0]);
+                const Index* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*32]);
+                T minval = 2147483647;
+                register T f[4] = {0};
+                register Index jind[4] = {0};
+                register uchar a[4] = {0};
+
+                #pragma unroll
+                for(int i=0; i<(((load+4-1)/4)*4); i+=4) {
+                    a[0] = i*4+(laneid%4) < load*4 ? Asub[i*4+(laneid%4)] : 0;
+                    a[1] = i*4+4+(laneid%4) < load*4 ? Asub[i*4+4+(laneid%4)] : 0;
+                    a[2] = i*4+8+(laneid%4) < load*4 ? Asub[i*4+8+(laneid%4)] : 0;
+                    a[3] = i*4+12+(laneid%4) < load*4 ? Asub[i*4+12+(laneid%4)] : 0;
+
+                    for(int j=0; j<4; j++) {
+                        jind[0] = i*4+(laneid%4) < load*4 ? colindsub[i]*4+j : 0;
+                        jind[1] = i*4+4+(laneid%4) < load*4 ? colindsub[i+1]*4+j : 0;
+                        jind[2] = i*4+8+(laneid%4) < load*4 ? colindsub[i+2]*4+j : 0;
+                        jind[3] = i*4+12+(laneid%4) < load*4 ? colindsub[i+3]*4+j : 0;
+
+                        f[0] = i*4+(laneid%4) < load*4 ? Bsub[jind[0]] : 0;
+                        f[1] = i*4+4+(laneid%4) < load*4 ? Bsub[jind[1]] : 0;
+                        f[2] = i*4+8+(laneid%4) < load*4 ? Bsub[jind[2]] : 0;
+                        f[3] = i*4+12+(laneid%4) < load*4 ? Bsub[jind[3]] : 0;
+
+                        /* relax the binary matrix */
+                        for(int l=0; l<4; l++) {
+                            T m;
+                            if (((a[l]>>(3-j))&0x1) == 0) {
+                                if (jind[l] == bx*32+laneid) m = 0;
+                                else m = 2147483647;
+                            } else {
+                                if (jind[l] == bx*32+laneid) m = 0;
+                                else m = 1;
+                            }
+                            T res = (f[l] == 2147483647 || m == 2147483647) ? 2147483647 : (f[l]+m);
+                            minval = min(res, minval);
+                        }
+                    }
+                }
+
+//                #pragma unroll
+//                for(int i=0; i<load; i+=1) {
+//                    a[0] = Asub[i*4+(laneid%4)];
+//
+//                    for(int j=0; j<4; j++) {
+//                        jind[0] = colindsub[i]*4+j;
+//                        f[0] = Bsub[jind[0]];
+//
+//                        /* relax the binary matrix */
+//                        T m;
+//                        if (((a[0]>>(3-j))&0x1) == 0) {
+//                            if (jind[0] == bx*32+laneid) m = 0;
+//                            else m = 2147483647;
+//                        } else {
+//                            if (jind[0] == bx*32+laneid) m = 0;
+//                            else m = 1;
+//                        }
+//                        T res = (f[0] == 2147483647 || m == 2147483647) ? 2147483647 : (f[0]+m);
+//                        minval = min(res, minval);
+//                    }
+//                }
+
+                // store
+                Csub[laneid] = minval;
+            }
+        }
+    }
 }
 
 // 512 trd per warp
@@ -944,14 +1124,11 @@ __global__ void bmv32_sparse_full_minplus(const unsigned* __restrict__ A, const 
                         }
 
                         T res = (f1 == 2147483647 || f2 == 2147483647) ? 2147483647 : (f1+f2);
-    //                        printf("f1+f2:%d\n", res);
                         minval = min(res, minval);
                     }
                 }
 
                 // store
-    //                printf("bx*16+tid/32:%d, minval: %d\n", bx*16+tid/32, minval);
-    //                printf("row: %d, minval: %d\n", bx*512+warpid*32+laneid, minval);
                 Csub[warpid*32+laneid] = minval;
             }
         }
@@ -975,6 +1152,87 @@ __global__ void assignMax(unsigned* resvec, const int N, const unsigned* mask, c
 //======================================================================================
 // pr.cu
 //======================================================================================
+template <typename Index, typename T>
+__global__ void bmv4_sparse_full(const uchar* __restrict__ A, const T* __restrict__ B, T* C,
+                                  const Index* __restrict__ rowptr, const Index* __restrict__ colind,
+                                  const Index nblockrows, const Index* __restrict__ csrrowptr, const float alpha)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*8 <= nblockrows) {
+        // compute
+
+        // load
+        GET_LANEID;
+        int row = bx*8+laneid/4;
+
+        if (row<nblockrows) {
+            int row_start, row_end, load=0;
+            row_start = rowptr[row];
+            row_end = rowptr[row+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const uchar* Asub = &(A[row_start*4]);
+                const T* Bsub = &(B[0]);
+                const Index* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*32]);
+                T sum = 0;
+                register T f[4] = {0};
+                register Index nnz[4] = {1};
+
+                #pragma unroll
+                for(int i=0; i<(((load+4-1)/4)*4); i+=4) {
+                    uchar a0 = i*4+(laneid%4) < load*4 ? Asub[i*4+(laneid%4)] : 0;
+                    uchar a1 = i*4+4+(laneid%4) < load*4 ? Asub[i*4+4+(laneid%4)] : 0;
+                    uchar a2 = i*4+8+(laneid%4) < load*4 ? Asub[i*4+8+(laneid%4)] : 0;
+                    uchar a3 = i*4+12+(laneid%4) < load*4 ? Asub[i*4+12+(laneid%4)] : 0;
+
+                    for(int j=0; j<4; j++) {
+                        Index j0 = i*4+(laneid%4) < load*4 ? colindsub[i]*4+j : 0;
+                        Index j1 = i*4+4+(laneid%4) < load*4 ? colindsub[i+1]*4+j : 0;
+                        Index j2 = i*4+8+(laneid%4) < load*4 ? colindsub[i+2]*4+j : 0;
+                        Index j3 = i*4+12+(laneid%4) < load*4 ? colindsub[i+3]*4+j : 0;
+
+                        f[0] = i*4+(laneid%4) < load*4 ? Bsub[j0] : 0;
+                        f[1] = i*4+4+(laneid%4) < load*4 ? Bsub[j1] : 0;
+                        f[2] = i*4+8+(laneid%4) < load*4 ? Bsub[j2] : 0;
+                        f[3] = i*4+12+(laneid%4) < load*4 ? Bsub[j3] : 0;
+
+                        nnz[0] = i*4+(laneid%4) < load*4 ? (csrrowptr[j0+1]-csrrowptr[j0]) :0;
+                        nnz[1] = i*4+4+(laneid%4) < load*4 ? (csrrowptr[j1+1]-csrrowptr[j1]) :0;
+                        nnz[2] = i*4+8+(laneid%4) < load*4 ? (csrrowptr[j2+1]-csrrowptr[j2]) :0;
+                        nnz[3] = i*4+12+(laneid%4) < load*4 ? (csrrowptr[j3+1]-csrrowptr[j3]) :0;
+
+                        sum +=(((a0>>(3-j))&0x1)?(alpha*f[0]/nnz[0]):0);
+                        sum +=(((a1>>(3-j))&0x1)?(alpha*f[1]/nnz[1]):0);
+                        sum +=(((a2>>(3-j))&0x1)?(alpha*f[2]/nnz[2]):0);
+                        sum +=(((a3>>(3-j))&0x1)?(alpha*f[3]/nnz[3]):0);
+                    }
+                }
+
+//                #pragma unroll
+//                for(int i=0; i<load; i+=1) {
+//                    uchar a0 = Asub[i*4+(laneid%4)];
+//
+//                    for(int j=0; j<4; j++) {
+//                        Index j0 = colindsub[i]*4+j;
+//                        f[0] = Bsub[j0];
+//                        nnz[0] = csrrowptr[j0+1]-csrrowptr[j0];
+//
+//                        sum +=(((a0>>(3-j))&0x1)?(alpha*f[0]/nnz[0]):0);
+//                    }
+//                }
+
+                // store
+                Csub[laneid] = sum;
+            }
+        }
+    }
+}
+
+
 // bin (A) * full (B) = full (C)
 // 512 trd per warp
 template <typename Index, typename T>
@@ -1010,7 +1268,6 @@ __global__ void bmv32_sparse_full(const unsigned* __restrict__ A, const T* __res
                 for(int i=0; i<load; i++) {
                     unsigned r0 = Asub[i*32+laneid];
 
-
                     #pragma unroll
                     for(int j=0; j<32; j++) {
                         Index jind = (colindsub[i])*32+j;
@@ -1018,11 +1275,6 @@ __global__ void bmv32_sparse_full(const unsigned* __restrict__ A, const T* __res
                         Index nnz = (csrrowptr[jind+1]-csrrowptr[jind]);
 
                         sum +=(((r0>>(31-j))&0x1)?(alpha*f1/nnz):0);
-
-//                        if (((r0>>(31-j))&0x1)) {
-//                            printf("%.3f, %d\n", f1, nnz);
-//                        }
-
                     }
                 }
 

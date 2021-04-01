@@ -10,9 +10,262 @@ using namespace std;
 #include <cublas_v2.h>
 
 #include "mmio_highlevel.h"
-#include "csr2bsr_batch.cu"
+#include "csr2bsr_batch_bsrbmv.cu"
 
-/* bsrbmv-32 */
+/* pr-4 */
+int main4(int argc, char* argv[])
+{
+    cudaSetDevice(0);
+    if (argc < 2)
+    {
+        printf("./exe [xxx.mtx]\n");
+        exit(1);
+    }
+
+    // ============================================= matrix storage
+    // read sparse matrix from file and store as csr format
+    // matrix metadata
+    char *filename = argv[1]; // e.g. "G43.mtx"
+    printf("input sparse matrix: %s\n", filename);
+
+    int nrows, ncols, nnz, isSymmetric;
+    mmio_info<float>(&nrows, &ncols, &nnz, &isSymmetric, filename);
+    printf("nrows: %d, ncols: %d, nnz: %d, isSymmetric: ", nrows, ncols, nnz); printf(isSymmetric?"true\n":"false\n");
+    unsigned csrbytes = (nrows+1+nnz*2) * 4;
+    printf("csr total size: "); printBytes(csrbytes); printf("\n");
+
+    // matrix csr in host
+    int* h_csrRowPtr, *h_csrColInd;
+    float* h_csrVal;
+    h_csrRowPtr = (int*) malloc(sizeof(int) * (nrows+1));
+    h_csrColInd = (int*) malloc(sizeof(int) * nnz);
+    h_csrVal = (float*) malloc(sizeof(float) * nnz);
+    mmio_data<float>(h_csrRowPtr, h_csrColInd, h_csrVal, filename);
+
+    // copy csr to device
+    int* csrRowPtr, *csrColInd;
+    float* csrVal;
+    cudaMalloc(&csrRowPtr, sizeof(int) * (nrows+1));
+    cudaMalloc(&csrColInd, sizeof(int) * nnz);
+    cudaMalloc(&csrVal, sizeof(float) * nnz);
+    cudaMemcpy(csrRowPtr, h_csrRowPtr, sizeof(int) * (nrows+1), cudaMemcpyHostToDevice);
+    cudaMemcpy(csrColInd, h_csrColInd, sizeof(int) * nnz, cudaMemcpyHostToDevice);
+    cudaMemcpy(csrVal, h_csrVal, sizeof(float) * nnz, cudaMemcpyHostToDevice);
+    // force all csrval to be 1 (this is for handling weighted adjacency matrix)
+    setDeviceValArr<int, float><<<1,1>>>(csrVal, nnz, 1.0);
+
+	// transform from csr to bsr using cuSPARSE
+	int* bsrRowPtr, *bsrColInd;
+	float* bsrVal;
+	int blocksize = 4;
+	int mb = (nrows + blocksize-1)/blocksize;
+    int nb = (ncols + blocksize-1)/blocksize;
+    int nblockrows = mb;
+
+	// cuSPARSE API metadata setup
+    cusparseMatDescr_t csr_descr = 0;
+    cusparseCreateMatDescr(&csr_descr);
+    cusparseSetMatType(csr_descr,CUSPARSE_MATRIX_TYPE_GENERAL);
+    cusparseSetMatIndexBase(csr_descr,CUSPARSE_INDEX_BASE_ZERO);
+    cusparseMatDescr_t bsr_descr = 0;
+    cusparseCreateMatDescr(&bsr_descr);
+    cusparseSetMatType(bsr_descr, CUSPARSE_MATRIX_TYPE_GENERAL);
+    cusparseSetMatIndexBase(bsr_descr, CUSPARSE_INDEX_BASE_ZERO);
+    cudaStream_t streamId = 0;
+    cusparseHandle_t handle = 0;
+    cusparseCreate(&handle);
+    cusparseSetStream(handle, streamId);
+    cusparseDirection_t dirA = CUSPARSE_DIRECTION_ROW;
+
+    // csr2bsr in row-major order, estimate first
+    int nblocks;
+
+    cudaMalloc((void**)&bsrRowPtr, sizeof(int) *(nblockrows+1));
+    cusparseXcsr2bsrNnz(handle, dirA, nrows, ncols, csr_descr,
+                        csrRowPtr, csrColInd, blocksize, bsr_descr, bsrRowPtr, &nblocks);
+    cudaMalloc((void**)&bsrColInd, sizeof(int)*nblocks);
+    printf("blocksize: %d, nblockrows: %d, nblocks: %d\n", blocksize, nblockrows, nblocks);
+    unsigned bytes = (nblocks * blocksize * 1 + (nblockrows+1+nblocks) * 4);
+    printf("bsr total size: "); printBytes(bytes); printf("\n");
+
+    // csr2csc for B as A^T
+    int* cscRowInd, *cscColPtr;
+    float* cscVal;
+    cudaMalloc(&cscRowInd, sizeof(int) * nnz);
+    cudaMalloc(&cscColPtr, sizeof(int) * (nrows+1));
+    cudaMalloc(&cscVal, sizeof(float) * nnz);
+
+    cusparseHandle_t handle_csr2csc;
+    cusparseCreate(&handle_csr2csc);
+    cusparseScsr2csc(handle_csr2csc, nrows, ncols, nnz,
+                     csrVal, csrRowPtr, csrColInd,
+                     cscVal, cscRowInd, cscColPtr,
+                     CUSPARSE_ACTION_NUMERIC,
+                     CUSPARSE_INDEX_BASE_ZERO);
+    cusparseDestroy(handle_csr2csc);
+
+    int *h_cscRowInd, *h_cscColPtr;
+    h_cscRowInd = (int*) malloc(sizeof(int) * nnz);
+    h_cscColPtr = (int*) malloc(sizeof(int) * (nrows+1));
+    cudaMemcpy(h_cscRowInd, cscRowInd, sizeof(int) * nnz, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_cscColPtr, cscColPtr, sizeof(int) * (nrows+1), cudaMemcpyDeviceToHost);
+
+    // csr2bsr for B & pack matrix for tB
+    int* new_bsrRowPtr, *new_bsrColInd;
+    cudaMalloc(&new_bsrRowPtr, sizeof(int) * (nblockrows+1));
+    cudaMalloc(&new_bsrColInd, sizeof(int) * nblocks);
+
+    // packed matrix
+    uchar* tA;
+    cudaMalloc((void**)&tA, ceil((float)nblocks/64) * 64 * blocksize * sizeof(uchar));
+
+    // use batch transform as default
+    csr2bsr_batch_4(h_csrRowPtr, h_csrColInd, nrows, ncols, nnz,
+                    new_bsrRowPtr, new_bsrColInd, tA, blocksize, nblockrows, nblocks);
+
+
+    free(h_cscRowInd);
+    free(h_cscColPtr);
+
+    // ============================================= input vector storage
+
+   // get gridDim, this is to avoid nblockrows being larger than MAX_gridDim (65535?!)
+    int gridDim = (int)ceil(cbrt((double)nblockrows/8));
+    dim3 grid(gridDim, gridDim, gridDim);
+
+    // ============================================= BSTC-4 bsr bmv
+    // pagerank vector (p)
+    // p fill with 1/nrows
+    float* p;
+    cudaMalloc((void**)&p, nblockrows * blocksize * sizeof(float));
+    setDeviceValArr<int, float><<<1,1>>>(p, nblockrows * blocksize , 1.0/nrows);
+
+    // previous pagerank vector (p_prev)
+    float* p_prev;
+    cudaMalloc((void**)&p_prev, nblockrows * blocksize * sizeof(float));
+    setDeviceValArr<int, float><<<1,1>>>(p_prev, nblockrows * blocksize , 0);
+
+    // temporary pagerank (p_swap)
+    float* p_swap;
+    cudaMalloc((void**)&p_swap, nblockrows * blocksize * sizeof(float));
+    setDeviceValArr<int, float><<<1,1>>>(p_swap, nblockrows * blocksize , 0);
+
+    // residual vector (r)
+    // fill r with 1.f
+    float* r;
+    cudaMalloc((void**)&r, nblockrows * blocksize * sizeof(float));
+    setDeviceValArr<int, float><<<1,1>>>(r, nblockrows * blocksize , 1.0);
+
+    // temporary residual (r_temp)
+    float* r_temp;
+    cudaMalloc((void**)&r_temp, nblockrows * blocksize * sizeof(float));
+    setDeviceValArr<int, float><<<1,1>>>(r_temp, nblockrows * blocksize , 0);
+
+    float error_last = 0.0;
+    float error = 1.0;
+    int unvisited = nrows;
+
+    // PageRank Parameters
+    float alpha = 0.85;
+    float eps   = 0.000000001;
+
+    float* errorptr;
+    cudaMalloc((void**)&errorptr, sizeof(float));
+
+    printf("nrows: %d\n", nrows);
+    printf("------------------------------------\n");
+
+    int iter;
+
+     dim3 NT, NB;
+     int nt = 1024;
+     NT.x = nt;
+     NT.y = 1;
+     NT.z = 1;
+     NB.x = (nblockrows+nt-1)/nt;
+     NB.y = 1;
+     NB.z = 1;
+
+    // ------
+    GpuTimer bmv_timer;
+    double bmv4_time;
+
+    GpuTimer bmv_timer_tight;
+    double bmv4_time_tight;
+
+    bmv_timer.Start();
+
+    for (iter=1; error > eps && iter<=MAX_ITER; iter++) {
+
+        unvisited -= (int)(error);
+        error_last = error;
+        //p_prev = p;
+        setDeviceValArr<int, float><<<1,1>>>(p_prev, nblockrows * blocksize , 0);
+        cudaMemcpy(p_prev, p, nrows * sizeof(float), cudaMemcpyDeviceToDevice);
+
+       // vxm: p = A*p + (1-alpha)*1
+//        bmv_timer_tight.Start();
+//       printf("p_prev: \n"); printResVecFloat<<<1,1>>>(p_prev, nblockrows*blocksize);
+       bmv4_sparse_full<int, float><<<grid, 32>>>(tA, p_prev, p_swap, new_bsrRowPtr, new_bsrColInd, nblockrows, csrRowPtr, alpha);
+//       printf("p_swap: \n"); printResVecFloat<<<1,1>>>(p_swap, nblockrows*blocksize);
+
+//        bmv_timer_tight.Stop();
+//        bmv4_time_tight += bmv_timer_tight.ElapsedMillis();
+
+        // ewise add p = p_swap + (1-alpha)/nrows
+        ewiseAddVal<<<(int)ceil(nrows/1024.0), 1024>>>(p, nrows, p_swap, (1.0-alpha)/nrows);
+
+        // error = l2loss(p, p_prev)
+        // r = p-pprev
+        ewiseSubVec<<<(int)ceil(nrows/1024.0), 1024>>>(r, nrows, p, p_prev);
+
+        // r_temp = r * r
+        ewiseMul<<<(int)ceil(nrows/1024.0), 1024>>>(r_temp, nrows, r, r);
+
+        // reduce rtemp to error
+        resetErrorptr<<<1,1>>>(errorptr);
+        reduceAdd<<<(int)ceil(nrows/1024.0), 1024>>>(errorptr, nrows, r_temp);
+        cudaMemcpy(&error, errorptr, sizeof(int), cudaMemcpyDeviceToHost);
+
+        error = sqrt(error);
+        printf("error: %f\n", error_last);
+
+//        int k;
+//        std::cin >> k;
+    }
+
+    bmv_timer.Stop();
+    bmv4_time = bmv_timer.ElapsedMillis();
+
+    printf("------------------------------------\n");
+    int niter = iter; printf("niter: %d\n", niter);
+    // ------
+
+    // free storage
+    cudaFree(tA);
+
+    //============================================= check result
+    printf("PR: %.3lf\n", bmv4_time);
+//    printf("BSR BMV-4-tight: %.3lf\n", bmv4_time_tight);
+
+
+    //============================================= free memory
+    // free cusparse bsr metadata
+    cusparseDestroyMatDescr(csr_descr);
+    cusparseDestroyMatDescr(bsr_descr);
+    cusparseDestroy(handle);
+
+    // free mem
+    free(h_csrRowPtr);
+    free(h_csrColInd);
+    free(h_csrVal);
+
+    cudaFree(csrRowPtr);
+    cudaFree(csrColInd);
+    cudaFree(csrVal);
+}
+
+/* pr-32 */
 int main32(int argc, char* argv[])
 {
     cudaSetDevice(0);
@@ -227,6 +480,9 @@ int main32(int argc, char* argv[])
        // solution 4
        // bmvbin_timer.Start();
        bmv32_sparse_full<int, float><<<grid_new, 512>>>(tA, p_prev, p_swap, new_bsrRowPtr, new_bsrColInd, nblockrows, csrRowPtr, alpha);
+
+//       bmv32_sparse_full_singlewarp<int, float><<<grid, 32>>>(tA, p_prev, p_swap, new_bsrRowPtr, new_bsrColInd, nblockrows, csrRowPtr, alpha);
+
        // bmvbin_timer.Stop();
        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
@@ -297,5 +553,9 @@ int main32(int argc, char* argv[])
 
 int main(int argc, char* argv[])
 {
+#if BLOCKSIZE == 32
     main32(argc, argv);
+#else
+    main4(argc, argv);
+#endif
 }

@@ -1,7 +1,7 @@
 #include <iostream>
 #include <sys/time.h>
 
-#define MAX_ITER 10
+#define TEST_TIMES 10000
 using namespace std;
 
 #include <cuda.h>
@@ -10,9 +10,9 @@ using namespace std;
 #include <cublas_v2.h>
 
 #include "mmio_highlevel.h"
-#include "csr2bsr_batch.cu"
+#include "csr2bsr_batch_bsrbmm.cu"
 
-/* bsrbmv-32 */
+/* tc-32 */
 int main32(int argc, char* argv[])
 {
     cudaSetDevice(0);
@@ -88,6 +88,10 @@ int main32(int argc, char* argv[])
     unsigned bytes = (nblocks * blocksize * 4 + (nblockrows+1+nblocks) * 4);
     printf("bsr total size: "); printBytes(bytes); printf("\n");
 
+    
+
+
+
     // csr2csc for B as A^T
     int* cscRowInd, *cscColPtr;
     float* cscVal;
@@ -127,53 +131,69 @@ int main32(int argc, char* argv[])
     free(h_cscColPtr);
 
     // ============================================= input vector storage
+    // generate random vector
+    srand(time(0));
+	float *B = (float*)malloc((nblockrows * blocksize) * 1 * sizeof(float));
+//	for (int i = 0; i < (nblockrows * blocksize) * 1; i ++)
+//    {
+//        float x = (float)rand() / RAND_MAX;
+//        if (i >= ncols) B[i] = 0;
+//        else B[i] = (x > 0.5) ? 1 : 0;
+//    }
+    for(int i=0 ;i<(nblockrows * blocksize); i++) B[i] = 0;
+    B[0] = 1;
+
+#ifdef VERBOSE
+    printf("initialize a vector with size %d x 1\n", (nblockrows * blocksize));
+//    printf("orivec: \n"); printHostVec(B, (nblockrows * blocksize));
+#endif
+
+    // copy to device
+	float *fB;
+	cudaMalloc(&fB, (nblockrows * blocksize) * 1 * sizeof(float));
+	cudaMemcpy(fB, B, (nblockrows * blocksize) * 1 * sizeof(float), cudaMemcpyHostToDevice);
+
+    // pack B
+    unsigned *tB;
+    cudaMalloc(&tB, nblockrows * 1 * sizeof(unsigned)); // (nblockrows * blocksize) / 32 = nblockrows
 
     // get gridDim, this is to avoid nblockrows being larger than MAX_gridDim (65535?!)
     int gridDim = (int)ceil(cbrt((double)nblockrows));
     dim3 grid(gridDim, gridDim, gridDim);
 
+#ifdef VERBOSE
+    printf("cbrt(nblockrows) = %d\n", gridDim);
+#endif
+
+    ToBit32Row<float><<<grid, 32>>>(fB, tB, nblockrows * blocksize, 1, nblockrows); // dense vector
+
+
     // ============================================= BSTC-32 bsr bmv
-    // difference vector
-    float* diff;
-    cudaMalloc((void**)&diff, nblockrows * blocksize * sizeof(float));
-    setDeviceValArr<int, float><<<1,1>>>(diff, nblockrows * blocksize , 0);
 
-    // parent vector
-    float* parent;
-    cudaMalloc((void**)&parent, nblockrows * blocksize * sizeof(float));
-    float* parent_temp;
-    cudaMalloc((void**)&parent_temp, nblockrows * blocksize * sizeof(float));
+    // init frontier
+    unsigned *frontier1;
+    cudaMalloc((void**)&frontier1, nblockrows * sizeof(unsigned));
+    setDeviceValArr<int, unsigned><<<1,1>>>(frontier1, nblockrows, 0);
+    cudaMemcpy(frontier1, tB, nblockrows * sizeof(unsigned), cudaMemcpyDeviceToDevice);
 
-    // grand parent vector
-    float* grandparent;
-    cudaMalloc((void**)&grandparent, nblockrows * blocksize * sizeof(float));
-    float* grandparent_temp;
-    cudaMalloc((void**)&grandparent_temp, nblockrows * blocksize * sizeof(float));
+    unsigned* frontier2;
+    cudaMalloc((void**)&frontier2, nblockrows * sizeof(unsigned));
+    setDeviceValArr<int, unsigned><<<1,1>>>(frontier2, nblockrows, 0);
 
-    // Min neighbor grandparent vector
-    float* min_neighbor_parent;
-    cudaMalloc((void**)&min_neighbor_parent, nblockrows * blocksize * sizeof(float));
-    float* min_neighbor_parent_temp;
-    cudaMalloc((void**)&min_neighbor_parent_temp, nblockrows * blocksize * sizeof(float));
-
-    // Initialize parent and min_neighbor_parent to:
-    // [0]:0 [1]:1 [2]:2 [3]:3 [4]:4, etc.
-    // parent.fillAscending(A_nrows)
-    // min_neighbor_parent.dup(&parent)
-    // min_neighbor_parent_temp.dup(&parent)
-    // grandparent.dup(&parent)
-    // grandparent_temp.dup(&parent)
+    unsigned* visited;
+    cudaMalloc((void**)&visited, nblockrows * sizeof(unsigned));
+    
 
     int gridDim_new = (int)ceil(cbrt((double)nblockrows/32));
     dim3 grid_new(gridDim_new, gridDim_new, gridDim_new);
 
+
     printf("nrows: %d\n", nrows);
     printf("------------------------------------\n");
-
-    int iter;
-    int succ = 0;
+    int succ = 0, prev_succ = 0;
     int *succptr;
     cudaMalloc((void**)&succptr, sizeof(int));
+    int i;
 
      dim3 NT, NB;
      int nt = 1024;
@@ -189,111 +209,72 @@ int main32(int argc, char* argv[])
     double bmvbin32_time;
     bmvbin_timer.Start();
 
-    for (iter=1; iter<=MAX_ITER; iter++) {
+    for (i=0; i<TEST_TIMES; i++) {
 
-        // duplicate parent as parent_temp
-        cudaMemcpy(parent_temp, parent, nblockrows * blocksize * sizeof(float), cudaMemcpyDeviceToDevice);
+       // assign new nodes to visited
+       OR<<<(int)ceil(nblockrows/1024.0), 1024>>>(visited, nblockrows, frontier1);
 
-        // 1) Stochastic hooking.
-        // mngf[u] = A x gf
-        // mxv: minselectsecondsemiring <-- think of it as just mul for now
+       // frontier2 = A * frontier1, mask = visited
+       // solution 1
+       // bmvbin_timer.Start();
+       // bmv32_sparse_bin_masked_v1<int, float><<<NB, NT>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
+       // bmvbin_timer.Stop();
+       // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
-        // ---
-        // solution 1
-        // bmvbin_timer.Start();
-        // bmv32_sparse_bin_masked_v1<int, float><<<NB, NT>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
-        // bmvbin_timer.Stop();
-        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
-
-        // solution 2
-        // bmvbin_timer.Start();
-        // bmv32_sparse_bin_masked_v2<int, float><<<grid, 32>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
-        // // Mask<<<1,1>>>(frontier2, nblockrows, visited); <-- required only when masked is not pass in
-        // bmvbin_timer.Stop();
-        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
+       // solution 2
+       // bmvbin_timer.Start();
+       // bmv32_sparse_bin_masked_v2<int, float><<<grid, 32>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
+       // // Mask<<<1,1>>>(frontier2, nblockrows, visited); <-- required only when masked is not pass in
+       // bmvbin_timer.Stop();
+       // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
 
-        // solution 3
-        // bmvbin_timer.Start();
-        // bmv32_sparse_bin_masked_v3<int, float><<<grid, 32>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
-        // bmvbin_timer.Stop();
-        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
+       // solution 3
+       // bmvbin_timer.Start();
+       // bmv32_sparse_bin_masked_v3<int, float><<<grid, 32>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
+       // bmvbin_timer.Stop();
+       // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
-        // solution 4
-        // bmvbin_timer.Start();
-        bmv32_sparse_full<int, float><<<grid_new, 1024>>>(tA, grandparent, min_neighbor_parent_temp, new_bsrRowPtr, new_bsrColInd, nblockrows);
-        // bmvbin_timer.Stop();
-        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
+       // solution 4
+       // bmvbin_timer.Start();
+       bmv32_sparse_bin_masked_v4<int, float><<<grid_new, 1024>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
+       // bmvbin_timer.Stop();
+       // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
-        // solution 5
-        // bmvbin_timer.Start();
-        // bmv32_sparse_bin_masked_v5<int, float><<<grid_new, 1024>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
-        // bmvbin_timer.Stop();
-        // bmvbin32_time += bmvbin_timer.ElapsedMillis();
+       // solution 5
+       // bmvbin_timer.Start();
+       // bmv32_sparse_bin_masked_v5<int, float><<<grid_new, 1024>>>(tA, frontier1, frontier2, new_bsrRowPtr, new_bsrColInd, nblockrows, visited);
+       // bmvbin_timer.Stop();
+       // bmvbin32_time += bmvbin_timer.ElapsedMillis();
 
-        // ---
-
-        // ewiseadd: MinimumSelectSecondSemiring <-- and then see if mnp_temp is smaller than parent
-        ewiseMin<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(min_neighbor_parent, nblockrows*blocksize,
-                                                                   min_neighbor_parent, min_neighbor_parent_temp);
-
-
-        // f[f[u]] = mngf[u]
-        assignScatter<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(parent, nblockrows*blocksize,
-                                                                        min_neighbor_parent, parent_temp);
-
-        // 2) Aggressive hooking.
-        // f = min(f, mngf)
-        ewiseMin<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(parent, nblockrows*blocksize,
-                                                                   parent, parent_temp);
-
-        // 3) Shortcutting.
-        // f = min(f, gf)
-        ewiseMin<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(parent, nblockrows*blocksize,
-                                                                   parent, min_neighbor_parent);
-
-        // 4) Calculate grandparents.
-        // gf[u] = f[f[u]]
-        extractGather<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(grandparent, nblockrows*blocksize,
-                                                                        parent, parent);
-
-        // 5) Check termination.
-        // eWiseMult, MinimumNotEqualToSemiring
-        ewiseNotEqual<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(diff, nblockrows*blocksize, grandparent_temp, grandparent);
-
-        // reduce add diff to succ
-        resetSuccptr<<<1,1>>>(succptr); //<-- use together with reduce
-        reduceAdd<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(succptr, nblockrows*blocksize, diff);
-        cudaMemcpy(&succ, succptr, sizeof(int), cudaMemcpyDeviceToHost);
-
-        // terminate condition
+       // swap frontier 1 and frontier2, frontier2 fill 0
+       cudaMemcpy(frontier1, frontier2, nblockrows * sizeof(unsigned), cudaMemcpyDeviceToDevice);
+       fillZero<<<(int)ceil(nblockrows/1024.0), 1024>>>(frontier2, nblockrows);
+       // printf("result_bsrbmv32-bin: \n"); printBin32Vec<<<1,1>>>(frontier1, nblockrows);
+       
+       
+       // get succ by reduce frontier1
+       resetSuccptr<<<1,1>>>(succptr); //<-- use together with reduce
+       reduce<<<(int)ceil(nblockrows/1024.0), 1024>>>(frontier1, nblockrows, succptr);
+       // reduce_naive<<<1,1>>>(frontier1, nblockrows, succptr);
+       cudaMemcpy(&succ, succptr, sizeof(int), cudaMemcpyDeviceToHost);
+       // printf("succ: %d\n", succ); // <-- print will slow down some time
+       
+       // terminate condition
        if (succ == 0) break;
-
-       // grandparent_temp.dup(&grandparent)
-       cudaMemcpy(grandparent_temp, grandparent, nblockrows * blocksize * sizeof(float), cudaMemcpyDeviceToDevice);
-
-       // 6) Similar to BFS and SSSP, we should filter out the unproductive
-        // vertices from the next iteration.
-        //     assign<int, bool, int, int>(&grandparent, &diff, GrB_NULL,
-        // std::numeric_limits<int>::max(), GrB_ALL, A_nrows, desc); ,with mask
-        assignMax<<<(int)ceil(nblockrows*blocksize/1024.0), 1024>>>(grandparent, nblockrows*blocksize, diff, std::numeric_limits<float>::max());
-
-        printf("succ: %d\n", succ); // <-- print will slow down some time
-
-       // copy result to output
-       // v->dup(&parent)
-
     }
 
     bmvbin_timer.Stop();
     bmvbin32_time = bmvbin_timer.ElapsedMillis();
 
     printf("------------------------------------\n");
-    int niter = iter; printf("niter: %d\n", niter);
+    int niter = i+1; printf("niter: %d\n", niter);
     // ------
+
 
     // free storage
     cudaFree(tA);
+    cudaFree(tB);
 
 #ifdef VERBOSE
 //    printf("result_bsrbmv32: \n"); printResVec<float><<<1,1>>>(fC, nrows);
@@ -319,6 +300,8 @@ int main32(int argc, char* argv[])
     cudaFree(csrRowPtr);
     cudaFree(csrColInd);
     cudaFree(csrVal);
+
+    cudaFree(fB);
 }
 
 int main(int argc, char* argv[])
