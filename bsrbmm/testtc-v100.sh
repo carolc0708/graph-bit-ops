@@ -1,15 +1,15 @@
 #!/bin/bash
 
-make tc
+make tc-v100
 
 for filename in ../data/*.mtx
 do
   echo "========================================="
-  ./tc4 $filename
+  ./tc4v $filename
   echo "-----------------------------------------"
-  ./tc8 $filename
+  ./tc8v $filename
   echo "-----------------------------------------"
-  ./tc16 $filename
+  ./tc16v $filename
   echo "-----------------------------------------"
-  ./tc32 $filename
+  ./tc32v $filename
 done
