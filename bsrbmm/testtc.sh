@@ -2,7 +2,7 @@
 
 make tc
 
-for filename in ../../data/*.mtx
+for filename in ../data/*.mtx
 do
   echo "========================================="
   ./tc4 $filename
