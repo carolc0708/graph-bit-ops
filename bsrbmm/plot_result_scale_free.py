@@ -4,7 +4,7 @@ import numpy as np
 import plotinpy as pnp
 
 # scale-free
-labels = ['h09', 'i04', 'coAuthor', 'coPaper', 'citPat', 'Journals', 'G43', 'ship_003']
+labels = ['h09', 'i04', 'coAuth', 'coPaper', 'citPat', 'Journals', 'G43', 'ship_003']
 # pascal-baseline
 # speedup_4 = [40.76,	1.08,	48.80,	49.52,	267.66,	5.89,	6.36,	28.71]
 # speedup_8 = [23.52,	2.24,	27.74,	36.86,	93.98,	6.59,	2.06,	37.49]
@@ -13,18 +13,18 @@ labels = ['h09', 'i04', 'coAuthor', 'coPaper', 'citPat', 'Journals', 'G43', 'shi
 # speedup_64 = [0.87,	0.85,	0.18,	1.02,	0.00,	6.22,	1.03,	4.18]
 
 # volta-baseline
-# speedup_4 = [11.48,	0.56,	8.39,	1.00,	51.12,	1.02,	0.53,	5.07]
-# speedup_8 = [4.55,	0.59,	3.38,	0.51,	11.53,	1.26,	0.14,	5.48]
-# speedup_16 = [14.89, 4.72,	5.94,	1.67,	16.44,	9.40,	0.90,	30.73]
-# speedup_32 = [5.76,	4.44,	1.19,	0.63,	2.66,	15.67,	1.42,	16.96]
-# speedup_64 = [1.03,	1.00,	0.10,	0.09,	0.18,	10.07,	0.83,	3.70]
+speedup_4 = [11.48,	0.56,	8.39,	1.00,	51.12,	1.02,	0.53,	5.07]
+speedup_8 = [4.55,	0.59,	3.38,	0.51,	11.53,	1.26,	0.14,	5.48]
+speedup_16 = [14.89, 4.72,	5.94,	1.67,	16.44,	9.40,	0.90,	30.73]
+speedup_32 = [5.76,	4.44,	1.19,	0.63,	2.66,	15.67,	1.42,	16.96]
+speedup_64 = [1.03,	1.00,	0.10,	0.09,	0.18,	10.07,	0.83,	3.70]
 
 # Turing-baseline
-speedup_4 = [10.99,	0.50,	9.33,	6.85,	67.75,	0.92,	0.52,	6.00]
-speedup_8 = [4.72,	0.58,	4.66,	4.36,	16.98,	1.08,	0.13,	7.10]
-speedup_16 = [13.65, 4.18,	9.71,	13.90,	20.11,	7.38,	0.80,	42.49]
-speedup_32 = [6.24,	4.84,	2.40,	6.29,	4.38,	12.00,	1.24,	26.43]
-speedup_64 = [1.15,	1.14,	0.22,	0.96,	0.00,	7.38,	0.66,	6.21]
+# speedup_4 = [10.99,	0.50,	9.33,	6.85,	67.75,	0.92,	0.52,	6.00]
+# speedup_8 = [4.72,	0.58,	4.66,	4.36,	16.98,	1.08,	0.13,	7.10]
+# speedup_16 = [13.65, 4.18,	9.71,	13.90,	20.11,	7.38,	0.80,	42.49]
+# speedup_32 = [6.24,	4.84,	2.40,	6.29,	4.38,	12.00,	1.24,	26.43]
+# speedup_64 = [1.15,	1.14,	0.22,	0.96,	0.00,	7.38,	0.66,	6.21]
 
 
 x = np.arange(len(labels))  # the label locations
@@ -38,11 +38,11 @@ rects4 = ax.bar(x+width, speedup_32, width, label='32x32', color='#81171b')
 rects5 = ax.bar(x+width*2, speedup_64, width, label='64x64', color='#540804')
 
 # Add some text for labels, title and custom x-axis tick labels, etc.
-ax.set_ylabel('Speedup over cuSPARSE-csrSpGEMM-float')
+ax.set_ylabel('Speedup over cuSPARSE-csrSpGEMM-float', fontsize=14)
 # ax.set_title('Speedup by block size over cuSPARSE')
 ax.set_xticks(x)
-ax.set_xticklabels(labels)
-ax.legend()
+ax.set_xticklabels(labels, fontsize=12)
+ax.legend(prop={"size":12})
 
 ## Add line at 1.0 speedup
 plt.axhline(y=1, color='gray', linestyle='--')
@@ -56,7 +56,7 @@ def autolabel(rects):
                     xy=(rect.get_x() + rect.get_width() / 2, height),
                     xytext=(0, 3),  # 3 points vertical offset
                     textcoords="offset points",
-                    ha='center', va='bottom', fontsize=5)
+                    ha='center', va='bottom', fontsize=6)
 
 
 autolabel(rects1)
@@ -67,5 +67,5 @@ autolabel(rects5)
 
 fig.tight_layout()
 
-plt.savefig("bmm_scale_free.png")
+plt.savefig("volta_bmm_scale_free.png")
 #plt.show()

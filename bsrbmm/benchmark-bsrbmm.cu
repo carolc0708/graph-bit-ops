@@ -198,10 +198,14 @@ int *runtime;
 
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
-        bmm4_sparse<int, int><<<grid, 32>>>(tA, tB, fC,
-                                               A_bsrRowPtr, A_bsrColInd,
-                                               B_bsrRowPtr, B_bsrColInd,
-                                               nblockrows, nblocks, nrows);
+//        bmm4_sparse<int, int><<<grid, 32>>>(tA, tB, fC,
+//                                               A_bsrRowPtr, A_bsrColInd,
+//                                               B_bsrRowPtr, B_bsrColInd,
+//                                               nblockrows, nblocks, nrows);
+        bmm4_sparse_masked_v4<int, int><<<grid, 32>>>(tA, tB, fC,
+                                                   A_bsrRowPtr, A_bsrColInd,
+                                                   B_bsrRowPtr, B_bsrColInd,
+                                                   nblockrows, nblocks, nrows);
     }
 
     bmm_timer.Stop();
@@ -259,7 +263,10 @@ int *runtime;
                         C_descr, C_csrRowPtr, &C_nnz);
 
     cudaMalloc(&C_csrColInd, sizeof(int) * C_nnz);
+    setDeviceValArr<int, int><<<1,1>>>(C_csrColInd, C_nnz, 0);
     cudaMalloc(&C_csrVal, sizeof(float) * C_nnz);
+    setDeviceValArr<int, float><<<1,1>>>(C_csrVal, C_nnz, 0);
+//    printf("result C_csrVal nnz: %d\n", C_nnz);
 
     // ------
 
@@ -267,6 +274,13 @@ int *runtime;
     csr_timer.Start();
 
     for (int i=0; i<TEST_TIMES; i++) {
+
+//       bmm4_sparse_full<int, float><<<grid, 32>>>(tA, tB, C_csrVal,
+//                                            A_bsrRowPtr, A_bsrColInd,
+//                                            B_bsrRowPtr, B_bsrColInd,
+//                                            C_csrRowPtr, C_csrColInd,
+//                                            nblockrows, nblocks, nrows);
+
         cusparseScsrgemm(handle_csr, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE, nrows, nrows, nrows,
                          A_descr, A_nnz, A_csrVal, A_csrRowPtr, A_csrColInd,
                          B_descr, B_nnz, B_csrVal, B_csrRowPtr, B_csrColInd,
@@ -275,6 +289,8 @@ int *runtime;
 
     csr_timer.Stop();
     double cusparsecsrspgemmfloat_time = csr_timer.ElapsedMillis()/double(TEST_TIMES);
+
+//    printResVec<<<1,1>>>(C_csrVal, C_nnz);
 
     // ------
 
@@ -1168,14 +1184,24 @@ int *runtime;
     for (int i=0; i<TEST_TIMES; i++) { // follow warp consolidation model (32 threads per block)
 
 //        bmm32_sparse<int, int><<<grid, 32>>>(tA, tB, fC,
-//                                               A_bsrRowPtr, A_bsrColInd,
-//                                               B_bsrRowPtr, B_bsrColInd,
-//                                               nblockrows, nblocks, nrows, runtime);
+//                                           A_bsrRowPtr, A_bsrColInd,
+//                                           B_bsrRowPtr, B_bsrColInd,
+//                                           nblockrows, nblocks, nrows, runtime);
 
-        bmm32_sparse_masked<int, int><<<grid, 32>>>(tA, tB, fC,
-                                                   A_bsrRowPtr, A_bsrColInd,
-                                                   B_bsrRowPtr, B_bsrColInd,
-                                                   nblockrows, nblocks, nrows);
+//        bmm32_sparse_masked<int, int><<<grid, 32>>>(tA, tB, fC,
+//                                                   A_bsrRowPtr, A_bsrColInd,
+//                                                   B_bsrRowPtr, B_bsrColInd,
+//                                                   nblockrows, nblocks, nrows);
+
+//        bmm32_sparse_masked_v3<int, int><<<grid, 32>>>(tA, tB, fC,
+//                                                    A_bsrRowPtr, A_bsrColInd,
+//                                                    B_bsrRowPtr, B_bsrColInd,
+//                                                    nblockrows, nblocks, nrows);
+
+        bmm32_sparse_masked_v4<int, int><<<grid, 32>>>(tA, tB, fC,
+                                                    A_bsrRowPtr, A_bsrColInd,
+                                                    B_bsrRowPtr, B_bsrColInd,
+                                                    nblockrows, nblocks, nrows);
     }
 
     bmm_timer.Stop();
@@ -1236,7 +1262,9 @@ int *runtime;
                         C_descr, C_csrRowPtr, &C_nnz);
 
     cudaMalloc(&C_csrColInd, sizeof(int) * C_nnz);
+    setDeviceValArr<int, int><<<1,1>>>(C_csrColInd, C_nnz, 0);
     cudaMalloc(&C_csrVal, sizeof(float) * C_nnz);
+    setDeviceValArr<int, float><<<1,1>>>(C_csrVal, C_nnz, 0);
 //    printf("result C_csrVal nnz: %d\n", C_nnz);
 
     // ------
@@ -1245,6 +1273,14 @@ int *runtime;
     csr_timer.Start();
 
     for (int i=0; i<TEST_TIMES; i++) {
+
+
+//       bmm32_sparse_full_v1<int, float><<<grid, 32>>>(tA, tB, C_csrVal,
+//                                                A_bsrRowPtr, A_bsrColInd,
+//                                                B_bsrRowPtr, B_bsrColInd,
+//                                                C_csrRowPtr, C_csrColInd,
+//                                                nblockrows, nblocks, nrows);
+
         cusparseScsrgemm(handle_csr, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE, nrows, nrows, nrows,
                          A_descr, A_nnz, A_csrVal, A_csrRowPtr, A_csrColInd,
                          B_descr, B_nnz, B_csrVal, B_csrRowPtr, B_csrColInd,
@@ -1253,6 +1289,9 @@ int *runtime;
 
     csr_timer.Stop();
     double cusparsecsrspgemmfloat_time = csr_timer.ElapsedMillis()/double(TEST_TIMES);
+
+//    printResVec<<<1,1>>>(C_csrVal, C_nnz);
+//    printResVec<<<1,1>>>(A_csrVal, A_nnz);
 
     // ------
 

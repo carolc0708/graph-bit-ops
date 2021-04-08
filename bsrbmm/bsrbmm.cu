@@ -461,7 +461,7 @@ __global__ void bmm32_sparse(const unsigned* __restrict__ A, const unsigned* __r
             for (int j=B_row_start; j<B_row_end; j++) {
                 unsigned r1 = Bsub[(j-B_row_start)*32+laneid]; // <--
 //                int B_col = B_colind[j];
-
+//                 if (laneid == 0) printf("C(%d, %d) += A(%d, %d) * B(%d, %d)\n", bx, B_colind[j], bx, A_col, A_col, B_colind[j]);
 
                 /* bmm */
                 #pragma unroll
@@ -621,6 +621,533 @@ __global__ void bmm32_sparse_masked(const unsigned* __restrict__ A, const unsign
         // store
         atomicAdd(Csub, sum);
     } // if bx < nblockrows + 1
+}
+
+// binary search
+template <typename Index>
+__device__ Index binarySearch(const Index* array,
+                              Index        target,
+                              Index        begin,
+                              Index        end)
+{
+    while (begin < end) {
+        int mid  = begin + (end - begin) / 2;
+        int item = array[mid];
+        if (item == target)
+          return mid;
+        bool larger = (item > target);
+        if (larger)
+          end = mid;
+        else
+          begin = mid + 1;
+    }
+    return -1;
+}
+
+// Cik = Sum(A_ij * B_jk) * A_ik
+template <typename Index, typename T>
+__global__ void bmm32_sparse_masked_v2(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                       const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                       const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                       const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+
+        GET_LANEID;
+        T* Csub = &C[0];
+        int sum = 0;
+
+        // load
+        int A_row_start = A_rowptr[bx];
+        int A_row_end = A_rowptr[bx+1];
+
+        for (int edge=A_row_start; edge<A_row_end; edge++) { // iterate the mask block location
+            unsigned mask_val = A[edge*32+laneid];
+
+            if (mask_val) {
+                register int Cm[32] = {0};
+
+                // load B bounds on which we must do binary search
+                Index B_ind = A_colind[edge]; // (0, 0), (0, 2)
+                Index B_col_start = B_rowptr[B_ind];
+                Index B_col_end = B_rowptr[B_ind+1];
+
+
+                // do bmm along the candidate blocks
+                for(int i=A_row_start; i<A_row_end; i++) {
+
+                    Index A_col = A_colind[i];
+                    Index B_row = binarySearch(B_colind, A_col, B_col_start, B_col_end);
+
+                    unsigned r0 = A[i*32+laneid];
+
+                    if (B_row != -1) {
+                        unsigned r1 = B[B_row*32+laneid];
+
+                        /* bmm */
+                        #pragma unroll
+                        for (int k=0; k<32; k++)
+                        {
+                            unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k);
+                            Cm[k] += __popc(r0 & r2);
+                        }
+                        /* bmm */
+
+                    } //B_row != -1
+                } //i
+
+                #pragma unroll
+                for (int k=0; k<32; k++)
+                {
+                    sum += (int)(((mask_val>>(31-k))&0x1)?Cm[k]:0); // masking
+                }
+            } //mask_val != 0
+        } //edge
+
+        // store
+        atomicAdd(Csub, sum);
+    }
+}
+
+// Cik = Sum(A_ij * B_jk) * A_ik
+template <typename Index, typename T>
+__global__ void bmm32_sparse_masked_v3(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                       const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                       const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                       const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+
+        GET_LANEID;
+        T* Csub = &C[0];
+        int sum = 0;
+        register int Cm[32] = {0};
+
+
+        // load
+        int A_row_start = A_rowptr[bx];
+        int A_row_end = A_rowptr[bx+1];
+
+        for (int edge=A_row_start; edge<A_row_end; edge++) { // iterate the mask block location
+            unsigned mask_val = A[edge*32+laneid];
+            Index C_col = A_colind[edge]; // C(0, 0), C(0, 1)
+
+            if (mask_val) {
+
+                for(int A_col=A_row_start; A_col<A_row_end; A_col++) {
+                    unsigned r0 = A[A_col*32+laneid];
+
+                    Index B_ind = A_colind[A_col];
+                    Index B_row_start = B_rowptr[B_ind];
+                    Index B_row_end = B_rowptr[B_ind+1];
+                    Index B_col = binarySearch(B_colind, C_col, B_row_start, B_row_end);
+
+                    if (B_col != -1) {
+
+    //                    if (laneid == 0) printf("C(%d, %d) += A(%d, %d) * B(%d, %d)\n", bx, C_col, bx, B_ind, B_ind, C_col);
+                        unsigned r1 = B[B_col*32+laneid];
+
+                        /* bmm */
+                        #pragma unroll
+                        for (int k=0; k<32; k++)
+                        {
+                            unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k);
+                            Cm[k] = __popc(r0 & r2);
+                            sum += (int)(((mask_val>>(31-k))&0x1)?Cm[k]:0);
+                        }
+                        /* bmm */
+                    } //B_col != -1
+                }
+            } // masking
+        } //edge
+
+        // store
+        atomicAdd(Csub, sum);
+    }
+}
+
+// Cik = Sum(A_ij * B_jk) * A_ik
+template <typename Index, typename T>
+__global__ void bmm4_sparse_full(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
+                                   const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                   const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                   const Index* __restrict__ C_rowptr, const Index* __restrict__ C_colind,
+                                   const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+        GET_LANEID;
+        T* Csub = &C[0];
+
+        // load
+        int A_row_start = A_rowptr[bx];
+        int A_row_end = A_rowptr[bx+1];
+        const uchar* Asub = &(A[A_row_start*4]);
+
+        Index C_row_start = C_rowptr[bx*4+laneid%4];
+        Index C_row_end = C_rowptr[bx*4+laneid%4+1];
+
+
+        for (int i=A_row_start; i<(int)ceil(float(A_row_end)/8)*8; i+=8) {
+            uchar r0 = 0;
+
+            if (i*4+laneid < A_row_end*4) {
+
+
+                register unsigned Cm[4] = {0};
+                Index C_row = C_row_start;
+
+                r0 = Asub[(i-A_row_start)*4+laneid];
+
+                int A_col = A_colind[i+laneid/4];
+                int B_row_start = B_rowptr[A_col];
+                int B_row_end = B_rowptr[A_col+1];
+                const uchar* Bsub = &(B[B_row_start*4]);
+                for (int j=B_row_start; j<B_row_end; j+=1) {
+                    uchar r1 = Bsub[(j-B_row_start)*4+laneid%4];
+    //                int B_col = B_colind[j];
+
+                    /* bmm */
+                    #pragma unroll
+                    for (int k=0; k<4; k++)
+                    {
+                        uchar r2 = __shfl_sync(0xFFFFFFFF, r1, k+(laneid/4)*4); //__shfl(r1, k+(laneid/4)*4);
+                        Cm[k] = __popc(r0 & r2);
+                    }
+                    /* bmm */
+
+                    // add to C_csrval
+                    for (int l=0; l<4; l++) {
+                        if (Cm[l])
+                        {
+                            atomicAdd(Csub+C_row, (T)Cm[l]); // 35.431 coAu
+                            // Csub[C_row] += (T)Cm[l]; // 81.818
+                            C_row++;
+                        }
+                    }
+
+                } // j in [B_row_start ... B_row_end]
+            } // i*4+laneid < A_row_end*4
+        } // i in [A_row_start ... A_row_end]
+    } // bx < nblockrow
+}
+
+
+// Cik = Sum(A_ij * B_jk) * A_ik
+template <typename Index, typename T>
+__global__ void bmm32_sparse_full_v1(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                   const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                   const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                   const Index* __restrict__ C_rowptr, const Index* __restrict__ C_colind,
+                                   const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+        GET_LANEID;
+        T* Csub = &C[0];
+
+        // load
+        int A_row_start = A_rowptr[bx]; // 0 32 64 . . . 991
+        int A_row_end = A_rowptr[bx+1]; // 32 64 96 . . . 991 1022
+        const unsigned* Asub = &(A[A_row_start*32]); // block is in continuous layout
+
+        Index C_row_start = C_rowptr[bx*32+laneid];
+        Index C_row_end = C_rowptr[bx*32+laneid+1];
+
+        for (int i=A_row_start; i<A_row_end; i++) {
+            unsigned r0 = Asub[(i-A_row_start)*32+laneid]; // <--
+            Index C_row = C_row_start;
+
+            int A_col = A_colind[i];
+            int B_row_start = B_rowptr[A_col];
+            int B_row_end = B_rowptr[A_col+1];
+            const unsigned* Bsub = &(B[B_row_start*32]);
+            for (int j=B_row_start; j<B_row_end; j++) {
+                unsigned r1 = Bsub[(j-B_row_start)*32+laneid];
+                int B_col = B_colind[j];
+
+                register unsigned Cm[32] = {0};
+
+                /* bmm */
+                #pragma unroll
+                for (int k=0; k<32; k++)
+                {
+                    unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k); //__shfl(r1, k); //from lane-j, r1 of matrix B
+                    Cm[k] = __popc(r0 & r2); // each lane dot-product with the column of B
+//                    if (Cm[k]) { atomicAdd(Csub+C_row, (T)Cm[k]); C_row++;} // 50.671, 83.306
+                }
+                /* bmm */
+
+                // add to C_csrval
+                for (int l=0; l<32; l++) {
+                    if (Cm[l])
+                        {
+                            atomicAdd(Csub+C_row, (T)Cm[l]); // 35.431 coAu
+    //                        Csub[C_row] += (T)Cm[l]; // 81.818
+                            C_row++;
+                        }
+                }
+
+            } // j in [B_row_start ... B_row_end]
+        } // i in [A_row_start ... A_row_end]
+    } // bx < nblockrow
+}
+
+
+//======================================================================================
+// TC masked function
+//======================================================================================
+template <typename Index, typename T>
+__global__ void bmm4_sparse_masked_v4(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
+                                   const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                   const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                   const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+        GET_LANEID;
+        T* Csub = &C[0];
+        register T sum[1] = {0};
+
+        // load
+        int A_row_start = A_rowptr[bx];
+        int A_row_end = A_rowptr[bx+1];
+        const uchar* Asub = &(A[A_row_start*4]);
+
+
+        for (int i=A_row_start; i<(int)ceil(float(A_row_end)/8)*8; i+=8) {
+            uchar r0 = 0;
+
+            if (i*4+laneid < A_row_end*4) {
+               register unsigned Cm[4] = {0};
+
+                r0 = Asub[(i-A_row_start)*4+laneid];
+
+                int A_col = A_colind[i+laneid/4];
+                int B_row_start = B_rowptr[A_col];
+                int B_row_end = B_rowptr[A_col+1];
+                const uchar* Bsub = &(B[B_row_start*4]);
+                for (int j=B_row_start; j<B_row_end; j+=1) {
+                    uchar r1 = Bsub[(j-B_row_start)*4+laneid%4];
+                    int B_col = B_colind[j];
+
+                    /* bmm */
+                    #pragma unroll
+                    for (int k=0; k<4; k++)
+                    {
+                        uchar r2 = __shfl_sync(0xFFFFFFFF, r1, k+(laneid/4)*4);
+                        Cm[k] = __popc(r0 & r2);
+                    }
+                    /* bmm */
+
+
+                    // load mask
+                    Index mask_ind = binarySearch(A_colind, B_col, A_row_start, A_row_end);
+                    if (mask_ind != -1) {
+                        unsigned mask_val = Asub[(mask_ind-A_row_start)*4+laneid%4];
+
+                        if (mask_val) {
+//                            T sum = 0;
+                            // add to C_csrval
+                            for (int l=0; l<4; l++) {
+                                sum[0] += (T)(((mask_val>>(3-l))&0x1)?Cm[l]:0);
+                            }
+//                            atomicAdd(Csub, sum);
+                        }
+                    } // mask_ind != -1
+
+                } // j in [B_row_start ... B_row_end]
+            } // i*4+laneid < A_row_end*4
+        } // i in [A_row_start ... A_row_end]
+        atomicAdd(Csub, sum[0]);
+    } // bx < nblockrow
+}
+
+template <typename Index, typename T>
+__global__ void bmm8_sparse_masked_v4(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
+                                   const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                   const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                   const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+        GET_LANEID;
+        T* Csub = &C[0];
+        register T sum[1] = {0};
+
+        // load
+        int A_row_start = A_rowptr[bx];
+        int A_row_end = A_rowptr[bx+1];
+        const uchar* Asub = &(A[A_row_start*8]);
+        for (int i=A_row_start; i<(int)ceil(float(A_row_end)/4)*4; i+=4) {
+            uchar r0 = 0;
+
+            if (i*8+laneid < A_row_end*8) {
+               register unsigned Cm[8] = {0};
+                r0 = Asub[(i-A_row_start)*8+laneid];
+
+                int A_col = A_colind[i+laneid/8];
+                int B_row_start = B_rowptr[A_col];
+                int B_row_end = B_rowptr[A_col+1];
+                const uchar* Bsub = &(B[B_row_start*8]);
+                for (int j=B_row_start; j<B_row_end; j+=1) {
+                    uchar r1 = Bsub[(j-B_row_start)*8+laneid%8];
+                    int B_col = B_colind[j];
+
+                    /* bmm */
+                    #pragma unroll
+                    for (int k=0; k<8; k++)
+                    {
+                        uchar r2 = __shfl_sync(0xFFFFFFFF, r1, k+(laneid/8)*8); //__shfl(r1, k+(laneid/8)*8);
+                        Cm[k] = __popc(r0 & r2);
+                    }
+                    /* bmm */
+
+
+                    // load mask
+                    Index mask_ind = binarySearch(A_colind, B_col, A_row_start, A_row_end);
+                    if (mask_ind != -1) {
+                        unsigned mask_val = Asub[(mask_ind-A_row_start)*8+laneid%8];
+
+                        if (mask_val) {
+//                            T sum = 0;
+                            // add to C_csrval
+                            for (int l=0; l<8; l++) {
+                                sum[0] += (T)(((mask_val>>(7-l))&0x1)?Cm[l]:0);
+                            }
+//                            atomicAdd(Csub, sum);
+                        }
+                    } // mask_ind != -1
+
+                } // j in [B_row_start ... B_row_end]
+            } // i*4+laneid < A_row_end*4
+        } // i in [A_row_start ... A_row_end]
+        atomicAdd(Csub, sum[0]);
+    } // bx < nblockrow
+}
+
+template <typename Index, typename T>
+__global__ void bmm16_sparse_masked_v4(const ushort* __restrict__ A, const ushort* __restrict__ B, T* C,
+                                   const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                   const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                   const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+        GET_LANEID;
+        T* Csub = &C[0];
+        register T sum[1] = {0};
+
+        // load
+        int A_row_start = A_rowptr[bx];
+        int A_row_end = A_rowptr[bx+1];
+        const ushort* Asub = &(A[A_row_start*16]);
+
+        for (int i=A_row_start; i<(int)ceil(float(A_row_end)/2)*2; i+=2) {
+            ushort r0 = 0;
+
+            if (i*16+laneid < A_row_end*16) {
+                register unsigned Cm[16] = {0};
+                r0 = Asub[(i-A_row_start)*16+laneid];
+
+
+                int A_col = A_colind[i+laneid/16];
+                int B_row_start = B_rowptr[A_col];
+                int B_row_end = B_rowptr[A_col+1];
+                const ushort* Bsub = &(B[B_row_start*16]);
+                for (int j=B_row_start; j<B_row_end; j+=1) {
+                    ushort r1 = Bsub[(j-B_row_start)*16+laneid%16];
+                    int B_col = B_colind[j];
+
+                    /* bmm */
+                    #pragma unroll
+                    for (int k=0; k<16; k++)
+                    {
+                        ushort r2 = __shfl_sync(0xFFFFFFFF, r1, k+(laneid/16)*16); //__shfl(r1, k+(laneid/16)*16);
+                        Cm[k] = __popc(r0 & r2);
+                    }
+                    /* bmm */
+
+                    // load mask
+                    Index mask_ind = binarySearch(A_colind, B_col, A_row_start, A_row_end);
+                    if (mask_ind != -1) {
+                        unsigned mask_val = Asub[(mask_ind-A_row_start)*16+laneid%16];
+
+                        if (mask_val) {
+//                            T sum = 0;
+                            // add to C_csrval
+                            for (int l=0; l<16; l++) {
+                                sum[0] += (T)(((mask_val>>(15-l))&0x1)?Cm[l]:0);
+                            }
+//                            atomicAdd(Csub, sum);
+                        }
+                    } // mask_ind != -1
+
+                } // j in [B_row_start ... B_row_end]
+            } // i*4+laneid < A_row_end*4
+        } // i in [A_row_start ... A_row_end]
+        atomicAdd(Csub, sum[0]);
+    } // bx < nblockrow
+}
+
+template <typename Index, typename T>
+__global__ void bmm32_sparse_masked_v4(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                   const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                   const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                   const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+        GET_LANEID;
+        T* Csub = &C[0];
+        register T sum[1] = {0};
+
+        // load
+        int A_row_start = A_rowptr[bx];
+        int A_row_end = A_rowptr[bx+1];
+        const unsigned* Asub = &(A[A_row_start*32]);
+
+        for (int i=A_row_start; i<A_row_end; i++) {
+            unsigned r0 = Asub[(i-A_row_start)*32+laneid];
+
+            int A_col = A_colind[i];
+            int B_row_start = B_rowptr[A_col];
+            int B_row_end = B_rowptr[A_col+1];
+            const unsigned* Bsub = &(B[B_row_start*32]);
+            for (int j=B_row_start; j<B_row_end; j++) {
+                unsigned r1 = Bsub[(j-B_row_start)*32+laneid];
+                int B_col = B_colind[j];
+                register unsigned Cm[32] = {0};
+
+                /* bmm */
+                #pragma unroll
+                for (int k=0; k<32; k++)
+                {
+                    unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k);
+                    Cm[k] = __popc(r0 & r2);
+                }
+                /* bmm */
+
+                // load mask
+                Index mask_ind = binarySearch(A_colind, B_col, A_row_start, A_row_end);
+                if (mask_ind != -1) {
+                    unsigned mask_val = Asub[(mask_ind-A_row_start)*32+laneid];
+
+                    if (mask_val) {
+//                        T sum = 0;
+                        // add to C_csrval
+                        for (int l=0; l<32; l++) {
+                            sum[0] += (T)(((mask_val>>(31-l))&0x1)?Cm[l]:0);
+                        }
+//                        atomicAdd(Csub, sum);
+                    }
+                } // mask_ind != -1
+            } // j in [B_row_start ... B_row_end]
+        } // i in [A_row_start ... A_row_end]
+        atomicAdd(Csub, sum[0]);
+    } // bx < nblockrow
 }
 
 
