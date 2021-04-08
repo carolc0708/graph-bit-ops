@@ -1,7 +1,7 @@
 # graph-bit-ops
 
 ## Environment
-* using `cuda/10.1.243`
+* using `cuda/10.2.89`
 * in `/data` directory, use `fetch_data.sh` to get all testing matrices
 
 ## BSR BMV (verified)
