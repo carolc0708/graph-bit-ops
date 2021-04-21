@@ -1108,35 +1108,6 @@ __global__ void resetErrorptr(float* errorptr) {
 }
 
 //======================================================================================
-// cc.cu
-//======================================================================================
-//// resvec = min(vec1, vec2)
-//__global__ void ewiseMin(float* resvec, const int N, const float* vec1, const float* vec2) {
-//    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = min(vec1[blockIdx.x*1024+threadIdx.x], vec2[blockIdx.x*1024+threadIdx.x]);
-//}
-
-// f[f[u]] = mngf[u]
-__global__ void assignScatter(float* resvec, const int N, const float* vec1, const float* vec2) {
-    if (blockIdx.x*1024+threadIdx.x < N) resvec[(int)(vec2[blockIdx.x*1024+threadIdx.x])] = vec1[blockIdx.x*1024+threadIdx.x];
-}
-
-// gf[u] = f[f[u]]
-__global__ void extractGather(float* resvec, const int N, const float* vec) {
-    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = vec[(int)(vec[blockIdx.x*1024+threadIdx.x])];
-}
-
-// resvec = vec1 != vec2
-__global__ void ewiseNotEqual(float* resvec, const int N, const float* vec1, const float* vec2) {
-    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (float)(vec1[blockIdx.x*1024+threadIdx.x] != vec2[blockIdx.x*1024+threadIdx.x]);
-}
-
-//// assign
-//__global__ void assignMax(float* resvec, const int N, const float* vec, const float val) {
-//    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = vec[blockIdx.x*1024+threadIdx.x] ? val : 0;
-//}
-
-
-//======================================================================================
 // new model -- more warps in a thread block
 //======================================================================================
 // 1024 threads/thread block <-- maximum

@@ -624,6 +624,80 @@ __global__ void bmm32_sparse_masked(const unsigned* __restrict__ A, const unsign
 }
 
 
+// binary search
+__device__ Index binarySearch(const Index* array,
+                              Index        target,
+                              Index        begin,
+                              Index        end)
+{
+    while (begin < end) {
+        int mid  = begin + (end - begin) / 2;
+        int item = array[mid];
+        if (item == target)
+          return mid;
+        bool larger = (item > target);
+        if (larger)
+          end = mid;
+        else
+          begin = mid + 1;
+    }
+    return -1;
+}
+
+// Cik = Sum(A_ij * B_jk) * A_ik
+template <typename Index, typename T>
+__global__ void bmm32_sparse_masked_v2(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+            const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+            const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+            const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+
+        GET_LANEID;
+        T* Csub = &C[0];
+        int sum = 0;
+
+        // load
+        int A_row_start = A_rowptr[bx];
+        int A_row_end = A_rowptr[bx+1];
+        const unsigned* Asub = &(A[A_row_start*32]);
+
+        for (int i=A_row_start; i<A_row_end; i++) { // iterate the mask block location
+
+            // load B bounds on which we must do binary search
+            Index B_ind = A_colind[i];
+            Index B_col_start = B_rowptr[B_ind];
+            Index B_col_end = B_rowptr[B_ind+1];
+
+            for(int j=A_row_start; j<A_row_end; j++) {
+                Index A_col = A_colind[j];
+                Index B_row = binarySearch(B_colind, A_col, B_col_start, B_col_end);
+
+                if (B_row != -1) {
+                    unsigned mask_val = A[i*32+laneid];
+                    unsigned r0 = A[A_col*32+laneid];
+                    unsigned r1 = B[B_row*32+laneid];
+                    unsigned register Cm[32] = {0};
+                    /* bmm */
+                    #pragma unroll
+                    for (int k=0; k<32; k++)
+                    {
+                        unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k);
+                        Cm[k] = __popc(r0 & r2);
+                        sum += (int)(((mask_val>>(31-k))&0x1)?Cm[k]:0); // masking
+                    }
+                    /* bmm */
+                }
+            }
+        }
+
+        // store
+        atomicAdd(Csub, sum);
+    }
+}
+
+
 //======================================================================================
 // Preprocessing and Postprocessing function
 //======================================================================================

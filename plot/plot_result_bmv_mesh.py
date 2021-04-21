@@ -31,7 +31,7 @@ speedup_64 = [0.41,	0.79,	0.24,	0.41,	0.33]
 x = np.arange(len(labels))  # the label locations
 width = 0.15  # the width of the bars
 
-fig, ax = plt.subplots()
+fig, ax = plt.subplots(figsize=(8,6), dpi=300)
 # rects1 = ax.bar(x-width, speedup_8, width, label='8x8', color='darkseagreen')
 # rects2 = ax.bar(x, speedup_16, width, label='16x16', color='cadetblue')
 # rects3 = ax.bar(x+width, speedup_32, width, label='32x32', color='steelblue')
@@ -44,34 +44,35 @@ rects4 = ax.bar(x+width, speedup_32, width, label='32x32', color='#40798c')
 rects5 = ax.bar(x+width*2, speedup_64, width, label='64x64', color='#1f363d')
 
 # Add some text for labels, title and custom x-axis tick labels, etc.
-ax.set_ylabel('Speedup over cuSPARSE-csrmv-float')
+ax.set_ylabel('Speedup over cuSPARSE-csrmv-float', fontsize=16)
 # ax.set_title('Speedup by block size over cuSPARSE')
 ax.set_xticks(x)
-ax.set_xticklabels(labels)
-ax.legend()
+ax.tick_params(labelsize=16)
+ax.legend(prop={"size":16}, loc="upper right")
+ax.set_xticklabels(labels, fontsize=12)
 
 ## Add line at 1.0 speedup
 plt.axhline(y=1, color='gray', linestyle='--')
 
 
-def autolabel(rects):
-    """Attach a text label above each bar in *rects*, displaying its height."""
-    for rect in rects:
-        height = rect.get_height()
-        ax.annotate('{}'.format(height),
-                    xy=(rect.get_x() + rect.get_width() / 2, height),
-                    xytext=(0, 3),  # 3 points vertical offset
-                    textcoords="offset points",
-                    ha='center', va='bottom', fontsize=5)
-
-
-autolabel(rects1)
-autolabel(rects2)
-autolabel(rects3)
-autolabel(rects4)
-autolabel(rects5)
+# def autolabel(rects):
+#     """Attach a text label above each bar in *rects*, displaying its height."""
+#     for rect in rects:
+#         height = rect.get_height()
+#         ax.annotate('{}'.format(height),
+#                     xy=(rect.get_x() + rect.get_width() / 2, height),
+#                     xytext=(0, 3),  # 3 points vertical offset
+#                     textcoords="offset points",
+#                     ha='center', va='bottom', fontsize=6)
+#
+#
+# autolabel(rects1)
+# autolabel(rects2)
+# autolabel(rects3)
+# autolabel(rects4)
+# autolabel(rects5)
 
 fig.tight_layout()
 
-plt.savefig("bmv_mesh_like.png")
+plt.savefig("pascal_bmv_mesh_like.jpeg")
 #plt.show()

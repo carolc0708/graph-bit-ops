@@ -177,6 +177,12 @@ __global__ void printResVec(const T* vec, const int N)
     printf("\n");
 }
 
+template <typename Index>
+__global__ void printNnzb(const Index* vec, const int N)
+{
+    printf("C_nnzb: %d \n", (int)vec[N]);
+}
+
 //======================================================================================
 // Print function for host (random) vector
 //======================================================================================

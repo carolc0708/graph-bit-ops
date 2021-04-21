@@ -1362,30 +1362,192 @@ __global__ void resetErrorptr(float* errorptr) {
 //======================================================================================
 // cc.cu
 //======================================================================================
-//// resvec = min(vec1, vec2)
-//__global__ void ewiseMin(float* resvec, const int N, const float* vec1, const float* vec2) {
-//    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = min(vec1[blockIdx.x*1024+threadIdx.x], vec2[blockIdx.x*1024+threadIdx.x]);
+// bin (A) * full (B) = full (C)
+// 512 trd per warp
+template <typename Index, typename T>
+__global__ void bmv4_sparse_full_cc(const uchar* __restrict__ A, const T* __restrict__ B, T* C,
+                                    const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*8 <= nblockrows) {
+
+        GET_LANEID;
+        int row = bx*8+laneid/4;
+
+        if (row<nblockrows) {
+
+            int row_start, row_end, load=0;
+            row_start = rowptr[row];
+            row_end = rowptr[row+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const uchar* Asub = &(A[row_start*4]);
+                const T* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*32]);
+                T sum = 2147483647;
+                register T f[4] = {0};
+
+                #pragma unroll
+                for(int i=0; i<(((load+4-1)/4)*4); i+=4) {
+                    uchar a0 = i*4+(laneid%4) < load*4 ? Asub[i*4+(laneid%4)] : 0;
+                    uchar a1 = i*4+4+(laneid%4) < load*4 ? Asub[i*4+4+(laneid%4)] : 0;
+                    uchar a2 = i*4+8+(laneid%4) < load*4 ? Asub[i*4+8+(laneid%4)] : 0;
+                    uchar a3 = i*4+12+(laneid%4) < load*4 ? Asub[i*4+12+(laneid%4)] : 0;
+
+
+                    #pragma unroll
+                    for(int j=0; j<4; j++) { // select the minimum along the nnz product
+                        Index j0 = i*4+(laneid%4) < load*4 ? colindsub[i]*4+j : 0;
+                        Index j1 = i*4+4+(laneid%4) < load*4 ? colindsub[i+1]*4+j : 0;
+                        Index j2 = i*4+8+(laneid%4) < load*4 ? colindsub[i+2]*4+j : 0;
+                        Index j3 = i*4+12+(laneid%4) < load*4 ? colindsub[i+3]*4+j : 0;
+
+                        f[0] = i*4+(laneid%4) < load*4 ? Bsub[j0] : 0;
+                        f[1] = i*4+4+(laneid%4) < load*4 ? Bsub[j1] : 0;
+                        f[2] = i*4+8+(laneid%4) < load*4 ? Bsub[j2] : 0;
+                        f[3] = i*4+12+(laneid%4) < load*4 ? Bsub[j3] : 0;
+
+                        sum = min(sum, (((a0>>(3-j))&0x1)?(f[0]):2147483647));
+                        sum = min(sum, (((a1>>(3-j))&0x1)?(f[1]):2147483647));
+                        sum = min(sum, (((a2>>(3-j))&0x1)?(f[2]):2147483647));
+                        sum = min(sum, (((a3>>(3-j))&0x1)?(f[3]):2147483647));
+                    }
+                }
+
+                // store
+                Csub[laneid] = sum;
+            }
+        }
+    }
+}
+
+// bin (A) * full (B) = full (C)
+// 512 trd per warp
+template <typename Index, typename T>
+__global__ void bmv32_sparse_full_cc(const unsigned* __restrict__ A, const T* __restrict__ B, T* C,
+                                     const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*16 <= nblockrows) {
+        // compute
+
+        // load
+        GET_LANEID;
+        const unsigned warpid = (tid >> 5);
+
+        if (bx*16+tid/32<nblockrows) {
+
+            int row_start, row_end, load=0;
+            row_start = rowptr[bx*16+tid/32];
+            row_end = rowptr[bx*16+tid/32+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const unsigned* Asub = &(A[row_start*32]);
+                const T* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*512]);
+                T sum = 2147483647;
+
+                #pragma unroll
+                for(int i=0; i<load; i++) {
+                    unsigned r0 = Asub[i*32+laneid];
+
+                    #pragma unroll
+                    for(int j=0; j<32; j++) { // select the minimum along the nnz product
+                        sum = min(sum, (((r0>>(31-j))&0x1)?(Bsub[(colindsub[i])*32+j]):2147483647));
+                    }
+                }
+
+                // store
+                Csub[warpid*32+laneid] = sum;
+            }
+        }
+    }
+}
+
+// resvec = min(vec1, vec2)
+__global__ void ewiseMin(int* resvec, const int N, const int* vec1, const int* vec2) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = min(vec1[blockIdx.x*1024+threadIdx.x], vec2[blockIdx.x*1024+threadIdx.x]);
+}
+
+//// f[f[u]] = mngf[u] (atomic?)
+//__global__ void assignScatter(int* resvec, const int N, const int* vec1, const int* vec2) {
+//    if (blockIdx.x*1024+threadIdx.x < N) resvec[vec1[blockIdx.x*1024+threadIdx.x]] = vec2[blockIdx.x*1024+threadIdx.x];
+//}
+//
+//
+//// gf[u] = f[f[u]]
+//__global__ void extractGather(int* resvec, const int N, const int* vec1, const int* vec2) {
+//    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = vec1[vec2[blockIdx.x*1024+threadIdx.x]];
 //}
 
-// f[f[u]] = mngf[u]
-__global__ void assignScatter(float* resvec, const int N, const float* vec1, const float* vec2) {
-    if (blockIdx.x*1024+threadIdx.x < N) resvec[(int)(vec2[blockIdx.x*1024+threadIdx.x])] = vec1[blockIdx.x*1024+threadIdx.x];
+
+// ----------- GraphBlast
+// no mask vector indexed variant for both sparse and dense
+__global__ void assignScatter(int* resvec, /* parent */
+                              const int N, /* nrows */
+                              int* indvec, /* parent_temp */
+                              int* valvec /* min_neighbor_parent */)
+{
+  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  for (; row < N; row += blockDim.x * gridDim.x) {
+    int ind = static_cast<int>(indvec[row]);
+    int val = valvec[row];
+    if (ind >= 0 && ind < N)
+      resvec[ind] = val;
+    __syncwarp();
+  }
 }
 
-// gf[u] = f[f[u]]
-__global__ void extractGather(float* resvec, const int N, const float* vec) {
-    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = vec[(int)(vec[blockIdx.x*1024+threadIdx.x])];
+// no mask vector indexed variant for both sparse and dense
+__global__ void extractGather(int* resvec, /* grandparent */
+                              const int N, /* nrows */
+                              int* indvec, /* parent */
+                              int* valvec /* parent */)
+{
+  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  for (; row < N; row += blockDim.x * gridDim.x) {
+    int ind = static_cast<int>(indvec[row]);
+    int val = valvec[ind];
+    if (ind >= 0 && ind < N)
+      resvec[row] = val;
+    __syncwarp();
+  }
 }
+
+// ----------- GraphBlast
 
 // resvec = vec1 != vec2
-__global__ void ewiseNotEqual(float* resvec, const int N, const float* vec1, const float* vec2) {
-    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (float)(vec1[blockIdx.x*1024+threadIdx.x] != vec2[blockIdx.x*1024+threadIdx.x]);
+__global__ void ewiseNotEqual(int* resvec, const int N, const int* vec1, const int* vec2) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (int)((vec1[blockIdx.x*1024+threadIdx.x] != vec2[blockIdx.x*1024+threadIdx.x]) || (vec1[blockIdx.x*1024+threadIdx.x] == 1) ||  (vec1[blockIdx.x*1024+threadIdx.x] == 1));
 }
 
-//// assign
-//__global__ void assignMax(float* resvec, const int N, const float* vec, const float val) {
-//    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = vec[blockIdx.x*1024+threadIdx.x] ? val : 0;
-//}
+// reduce
+__global__ void reduceAddInt(int* resptr, const int N, const int* vec) {
+    if (blockIdx.x*1024+threadIdx.x < N) atomicAdd(resptr, vec[blockIdx.x*1024+threadIdx.x]);
+}
+
+// assign
+__global__ void assignMax(int* resvec, const int N, const int* vec, const int val) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (vec[blockIdx.x*1024+threadIdx.x] == 0) ? val : resvec[blockIdx.x*1024+threadIdx.x];
+}
+
+// fill ascending
+__global__ void fillAscending(int* resvec, const int N) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = (int)(blockIdx.x*1024+threadIdx.x);
+}
+
+// init vector
+__global__ void initVec(int* resvec, const int N) {
+    if (blockIdx.x*1024+threadIdx.x < N) resvec[blockIdx.x*1024+threadIdx.x] = 0;
+}
 
 
 //======================================================================================

@@ -452,7 +452,7 @@ int main32(int argc, char* argv[])
         unvisited -= (int)(error);
         error_last = error;
         //p_prev = p;
-        setDeviceValArr<int, float><<<1,1>>>(p_prev, nblockrows * blocksize , 0);
+        setDeviceValArr<int, float><<<1,1>>>(p_prev, nblockrows * blocksize , 0); // <-- should be change to parallize
         cudaMemcpy(p_prev, p, nrows * sizeof(float), cudaMemcpyDeviceToDevice);
 
        // vxm: p = A*p + (1-alpha)*1

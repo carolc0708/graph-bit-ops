@@ -966,6 +966,64 @@ __global__ void bmm4_sparse_masked_v4(const uchar* __restrict__ A, const uchar* 
 }
 
 template <typename Index, typename T>
+__global__ void bmm4_sparse_masked_v5(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
+                                   const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                   const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                   const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+        GET_LANEID;
+        T* Csub = &C[0];
+        T sum = 0;
+
+        int A_row_start = A_rowptr[bx];
+        int A_row_end = A_rowptr[bx+1];
+
+        for (Index i=A_row_start; i<(int)ceil(float(A_row_end)/8)*8; i+=8) {
+
+            if (i*4+laneid < A_row_end*4) {
+                Index mask_col = A_colind[i+laneid/4];
+                uchar mask_val = A[i*4+laneid];  // process 8 blocks at a time
+                register unsigned Cm[4] = {0};
+
+                // collect the result of bmms
+                for (Index j=A_row_start; j<A_row_end; j++) {
+                    Index A_col = A_colind[j];
+                    Index B_row_start = B_rowptr[A_col];
+                    Index B_row_end = B_rowptr[A_col+1];
+
+                    Index B_col = binarySearch(B_colind, mask_col, B_row_start, B_row_end);
+
+                    if (B_col != -1) {
+                        uchar r0 = A[j*4+laneid%4];
+                        uchar r1 = B[B_col*4+laneid%4];
+
+                        /* bmm */
+                        #pragma unroll
+                        for (int k=0; k<4; k++)
+                        {
+                            uchar r2 = __shfl_sync(0xFFFFFFFF, r1, k+(laneid/4)*4);
+                            Cm[k] += (T)(__popc(r0 & r2));
+                        }
+                        /* bmm */
+                    }
+                }
+
+                // do masking
+                for (int l=0; l<4; l++)
+                {
+                    sum += (T)(((mask_val>>(3-l))&0x1)?Cm[l]:0);
+                }
+
+            }
+        }
+
+        atomicAdd(Csub, sum);
+    }
+}
+
+template <typename Index, typename T>
 __global__ void bmm8_sparse_masked_v4(const uchar* __restrict__ A, const uchar* __restrict__ B, T* C,
                                    const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
                                    const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
@@ -1092,6 +1150,7 @@ __global__ void bmm16_sparse_masked_v4(const ushort* __restrict__ A, const ushor
     } // bx < nblockrow
 }
 
+// traverse from A <-- verified
 template <typename Index, typename T>
 __global__ void bmm32_sparse_masked_v4(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
                                    const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
@@ -1150,7 +1209,199 @@ __global__ void bmm32_sparse_masked_v4(const unsigned* __restrict__ A, const uns
     } // bx < nblockrow
 }
 
+// traverse from C <-- verified
+template <typename Index, typename T>
+__global__ void bmm32_sparse_masked_v5(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C,
+                                   const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                   const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                   const Index nblockrows, const Index nblocks, const int nrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    if (bx < nblockrows) {
+        GET_LANEID;
+        T* Csub = &C[0];
+        T sum = 0;
 
+        int A_row_start = A_rowptr[bx];
+        int A_row_end = A_rowptr[bx+1];
+
+        for (Index i=A_row_start; i<A_row_end; i++) {
+            Index mask_col = A_colind[i];
+            unsigned mask_val = A[i*32+laneid];
+            register unsigned Cm[32] = {0};
+
+            // collect the result of bmms
+            for (Index j=A_row_start; j<A_row_end; j++) {
+                Index A_col = A_colind[j];
+                Index B_row_start = B_rowptr[A_col];
+                Index B_row_end = B_rowptr[A_col+1];
+
+                Index B_col = binarySearch(B_colind, mask_col, B_row_start, B_row_end);
+
+                if (B_col != -1) {
+                    unsigned r0 = A[j*32+laneid];
+                    unsigned r1 = B[B_col*32+laneid];
+
+                    /* bmm */
+                    #pragma unroll
+                    for (int k=0; k<32; k++)
+                    {
+                        unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k);
+                        Cm[k] += (T)(__popc(r0 & r2));
+                    }
+                    /* bmm */
+                }
+            }
+
+            // do masking
+            for (int l=0; l<32; l++)
+            {
+                sum += (T)(((mask_val>>(31-l))&0x1)?Cm[l]:0);
+            }
+        }
+
+        atomicAdd(Csub, sum);
+    }
+}
+
+
+//======================================================================================
+// New spgemm (with sparse output storage)
+//======================================================================================
+// set the nnzb in C
+template <typename Index, typename T>
+__global__ void bmm32_sparse_symbolic(const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                      const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                      Index* C_rowptr, const Index nblockrows)
+{
+    // C00 = A00*B00 + A01*B10 + A02*B20 + ... + A0n*Bn0
+    Index row_start = 0;
+    C_rowptr[0] = 0;
+    for(Index C_row=0; C_row<nblockrows; C_row++) {
+
+        // fix C_row to A_row
+        Index A_row_start = A_rowptr[C_row];
+        Index A_row_end = A_rowptr[C_row+1];
+
+        // for each C_col along the row
+        for(Index C_col=0; C_col<nblockrows; C_col++) {
+            bool exist = false;
+
+            // check each A's block
+            for (Index i=A_row_start; i<A_row_end; i++) {
+                Index A_col = A_colind[i];
+                Index B_row_start = B_rowptr[A_col];
+                Index B_row_end = B_rowptr[A_col+1];
+
+                // check if can be found in B
+                Index B_col = binarySearch(B_colind, C_col, B_row_start, B_row_end);
+                if (B_col != -1) exist = true;
+            }
+
+            if (exist) row_start++; //C_colind[row_start++] = C_col;
+        }
+        C_rowptr[C_row+1] = row_start; printf("rowptr[%d] = %d\n", C_row+1, row_start);
+    }
+}
+
+
+// <-- use with spgemm symbolic, this is correct
+// set the nnzb in C
+template <typename Index, typename T>
+__global__ void bmm32_sparse_numeric(const unsigned* __restrict__ A, const unsigned* __restrict__ B, T* C_csrval,
+                                    const Index* __restrict__ A_rowptr, const Index* __restrict__ A_colind,
+                                    const Index* __restrict__ B_rowptr, const Index* __restrict__ B_colind,
+                                    const Index* __restrict__ C_rowptr, Index* C_colind, const Index nblockrows)
+{
+
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    Index C_row = bx;
+    if (C_row < nblockrows) {
+
+        GET_LANEID;
+        // fix C_row, process 1 row per lane
+        Index C_row_start = C_rowptr[C_row*32+laneid];
+        Index C_row_end = C_rowptr[C_row*32+laneid+1];
+
+        Index A_row_start = A_rowptr[C_row];
+        Index A_row_end = A_rowptr[C_row+1];
+
+        for(Index C_col=0; C_col<nblockrows; C_col++) {
+
+            bool exist = false;
+            register T Cm[32] = {0};
+
+            // check each A's block
+            for (Index i=A_row_start; i<A_row_end; i++) {
+                unsigned r0 = A[i*32+laneid];
+
+                Index A_col = A_colind[i];
+                Index B_row_start = B_rowptr[A_col];
+                Index B_row_end = B_rowptr[A_col+1];
+
+                // check if can be found in B
+                Index B_col = binarySearch(B_colind, C_col, B_row_start, B_row_end);
+                if (B_col != -1) {
+                    exist = true;
+
+                    unsigned r1 = B[B_col*32+laneid];
+                    /* bmm */
+                    #pragma unroll
+                    for (int k=0; k<32; k++)
+                    {
+                        unsigned r2 = __shfl_sync(0xFFFFFFFF, r1, k);
+                        Cm[k] += (T)(__popc(r0 & r2));
+                    }
+                    /* bmm */
+                }
+            } // i
+
+            // update result
+            if (exist) {
+                Index row = C_row_start;
+                for(int k=0; k<32; k++) {
+                    if (Cm[k]) {  // set colind & csrval
+                        C_colind[row] = C_col*32+k;
+                        C_csrval[row] = Cm[k];
+                        row++;
+                    }
+                }
+                C_row_start = row;
+            } // exist
+        } // C_col
+    } // bx < nblockrow
+}
+
+// currently do not match the baseline
+template <typename Index, typename T>
+__global__ void reduceSum_masked(const T* __restrict__ C_csrVal, const int nrows, int* gOut,
+                                const Index* __restrict__ A_csrRowPtr, const Index* __restrict__ A_csrColInd,
+                                const Index* __restrict__ C_csrRowPtr, const Index* __restrict__ C_csrColInd)
+{
+
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    Index A_row = bx;
+
+    if (A_row < nrows) {
+        Index A_row_start = A_csrRowPtr[A_row];
+        Index A_row_end = A_csrRowPtr[A_row+1];
+        Index C_row_start = C_csrRowPtr[A_row];
+        Index C_row_end = C_csrRowPtr[A_row+1];
+
+        for(Index j=A_row_start; j<A_row_end; j++) {
+            Index A_col = A_csrColInd[j];
+            Index C_col = binarySearch(C_csrColInd, A_col, C_row_start, C_row_end);
+
+            if (C_col != -1) {
+                atomicAdd(gOut, (int)C_csrVal[C_col]);
+
+//                printf("j: %d, A_col: %d, C_col:%d, C_csrVal: %d\n", j, A_col, C_col, (int)C_csrVal[C_col]);
+//                printf("# %d %d %d\n", j, A_col, (int)C_csrVal[C_col]);
+            }
+
+        }
+    }
+}
 //======================================================================================
 // Preprocessing and Postprocessing function
 //======================================================================================
