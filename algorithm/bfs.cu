@@ -8,8 +8,10 @@ using namespace std;
 #include <cuda_runtime.h>
 #include <cusparse_v2.h>
 #include <cublas_v2.h>
+#include <vector>
+#include "readMtx.hpp"
 
-#include "mmio_highlevel.h"
+//#include "mmio_highlevel.h"
 #include "csr2bsr_batch_bsrbmv.cu"
 
 /* BFS-4 */
@@ -28,19 +30,24 @@ int main4(int argc, char* argv[])
     char *filename = argv[1]; // e.g. "G43.mtx"
     printf("input sparse matrix: %s\n", filename);
 
-    int nrows, ncols, nnz, isSymmetric;
-    mmio_info<float>(&nrows, &ncols, &nnz, &isSymmetric, filename);
-    printf("nrows: %d, ncols: %d, nnz: %d, isSymmetric: ", nrows, ncols, nnz); printf(isSymmetric?"true\n":"false\n");
-    unsigned csrbytes = (nrows+1+nnz*2) * 4;
-    printf("csr total size: "); printBytes(csrbytes); printf("\n");
+    // graphblast mmio interface =======
+    std::vector<int> row_indices;
+    std::vector<int> col_indices;
+    std::vector<float> values;
+    int nrows, ncols, nnz;
+    char* dat_name;
+    int directed = atoi(argv[2]);
 
-    // matrix csr in host
-    int* h_csrRowPtr, *h_csrColInd;
-    float* h_csrVal;
-    h_csrRowPtr = (int*) malloc(sizeof(int) * (nrows+1));
-    h_csrColInd = (int*) malloc(sizeof(int) * nnz);
-    h_csrVal = (float*) malloc(sizeof(float) * nnz);
-    mmio_data<float>(h_csrRowPtr, h_csrColInd, h_csrVal, filename);
+    readMtx(filename, &row_indices, &col_indices, &values,
+            &nrows, &ncols, &nnz, directed, false, &dat_name); // directed, mtxinfo
+
+    int* h_csrRowPtr = (int*) malloc(sizeof(int) * (nrows+1));
+    int* h_csrColInd = (int*) malloc(sizeof(int) * nnz);
+    float* h_csrVal = (float*) malloc(sizeof(float) * nnz);
+
+    coo2csr(h_csrRowPtr, h_csrColInd, h_csrVal,
+    row_indices, col_indices, values, nrows, ncols);
+    printf("nrows: %d, ncols: %d, nnz: %d\n", nrows, ncols, nnz);
 
     // copy csr to device
     int* csrRowPtr, *csrColInd;
@@ -315,19 +322,24 @@ int main32(int argc, char* argv[])
     char *filename = argv[1]; // e.g. "G43.mtx"
     printf("input sparse matrix: %s\n", filename);
 
-    int nrows, ncols, nnz, isSymmetric;
-    mmio_info<float>(&nrows, &ncols, &nnz, &isSymmetric, filename);
-    printf("nrows: %d, ncols: %d, nnz: %d, isSymmetric: ", nrows, ncols, nnz); printf(isSymmetric?"true\n":"false\n");
-    unsigned csrbytes = (nrows+1+nnz*2) * 4;
-    printf("csr total size: "); printBytes(csrbytes); printf("\n");
+    // graphblast mmio interface =======
+    std::vector<int> row_indices;
+    std::vector<int> col_indices;
+    std::vector<float> values;
+    int nrows, ncols, nnz;
+    char* dat_name;
+    int directed = atoi(argv[2]);
 
-    // matrix csr in host
-    int* h_csrRowPtr, *h_csrColInd;
-    float* h_csrVal;
-    h_csrRowPtr = (int*) malloc(sizeof(int) * (nrows+1));
-    h_csrColInd = (int*) malloc(sizeof(int) * nnz);
-    h_csrVal = (float*) malloc(sizeof(float) * nnz);
-    mmio_data<float>(h_csrRowPtr, h_csrColInd, h_csrVal, filename);
+    readMtx(filename, &row_indices, &col_indices, &values,
+            &nrows, &ncols, &nnz, directed, false, &dat_name); // directed, mtxinfo
+
+    int* h_csrRowPtr = (int*) malloc(sizeof(int) * (nrows+1));
+    int* h_csrColInd = (int*) malloc(sizeof(int) * nnz);
+    float* h_csrVal = (float*) malloc(sizeof(float) * nnz);
+
+    coo2csr(h_csrRowPtr, h_csrColInd, h_csrVal,
+    row_indices, col_indices, values, nrows, ncols);
+    printf("nrows: %d, ncols: %d, nnz: %d\n", nrows, ncols, nnz);
 
     // copy csr to device
     int* csrRowPtr, *csrColInd;

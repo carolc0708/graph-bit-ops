@@ -9,8 +9,9 @@ all: bfs4
 bfs: bfs4 bfs32
 sssp: sssp4 sssp32
 pr: pr4 pr32
+cc: cc4 cc8 cc16 cc32
 
-# pr
+# bfs
 bfs4: bfs.cu bsrbmv.cu utility.cu csr2bsr_batch_bsrbmv.cu
 	$(CC) $(FLAGS) $(LINK) bfs.cu -DBLOCKSIZE=4 -o $@
 bfs32: bfs.cu bsrbmv.cu utility.cu csr2bsr_batch_bsrbmv.cu
@@ -28,5 +29,15 @@ pr4: pr.cu bsrbmv.cu utility.cu csr2bsr_batch_bsrbmv.cu
 pr32: pr.cu bsrbmv.cu utility.cu csr2bsr_batch_bsrbmv.cu
 	$(CC) $(FLAGS) $(LINK) pr.cu -DBLOCKSIZE=32 -o $@
 
+# cc
+cc4: cc.cu bsrbmv.cu utility.cu csr2bsr_batch_bsrbmv.cu
+	$(CC) $(FLAGS) $(LINK) cc.cu -DBLOCKSIZE=4 -o $@
+cc8: cc.cu bsrbmv.cu utility.cu csr2bsr_batch_bsrbmv.cu
+	$(CC) $(FLAGS) $(LINK) cc.cu -DBLOCKSIZE=8 -o $@
+cc16: cc.cu bsrbmv.cu utility.cu csr2bsr_batch_bsrbmv.cu
+	$(CC) $(FLAGS) $(LINK) cc.cu -DBLOCKSIZE=16 -o $@
+cc32: cc.cu bsrbmv.cu utility.cu csr2bsr_batch_bsrbmv.cu
+	$(CC) $(FLAGS) $(LINK) cc.cu -DBLOCKSIZE=32 -o $@
+
 clean:
-	rm -f bfs4 bfs32 sssp4 sssp32 pr4 pr32
+	rm -f bfs4 bfs32 sssp4 sssp32 pr4 pr32 cc4 cc8 cc16 cc32
