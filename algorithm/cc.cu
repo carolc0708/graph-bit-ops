@@ -1,7 +1,7 @@
 #include <iostream>
 #include <sys/time.h>
 
-#define MAX_ITER 10
+#define MAX_ITER 10000
 using namespace std;
 
 #include <cuda.h>
@@ -229,7 +229,7 @@ int main4(int argc, char* argv[])
         // 1) Stochastic hooking.
         // mngf[u] = A x gf
         // mxv
-        bmv4_sparse_full_cc_new<int, int><<<grid_new, 1024>>>(tA, grandparent, min_neighbor_parent_temp, bsrRowPtr, bsrColInd, nblockrows);
+        bmv4_sparse_full_cc_new_2<int, int><<<grid_new, 1024>>>(tA, grandparent, min_neighbor_parent_temp, bsrRowPtr, bsrColInd, nblockrows);
 //        printResVec<int><<<1,1>>>(min_neighbor_parent_temp, nrows);
         ewiseMin<<<(int)ceil(nrows/1024.0), 1024>>>(min_neighbor_parent, nrows, min_neighbor_parent, min_neighbor_parent_temp);
 //        printResVec<int><<<1,1>>>(min_neighbor_parent, nrows);
@@ -494,7 +494,7 @@ int main8(int argc, char* argv[])
         // 1) Stochastic hooking.
         // mngf[u] = A x gf
         // mxv
-        bmv8_sparse_full_cc_new<int, int><<<grid_new, 1024>>>(tA, grandparent, min_neighbor_parent_temp, bsrRowPtr, bsrColInd, nblockrows);
+        bmv8_sparse_full_cc_new_2<int, int><<<grid_new, 1024>>>(tA, grandparent, min_neighbor_parent_temp, bsrRowPtr, bsrColInd, nblockrows);
 //        printResVec<int><<<1,1>>>(min_neighbor_parent_temp, nrows);
         ewiseMin<<<(int)ceil(nrows/1024.0), 1024>>>(min_neighbor_parent, nrows, min_neighbor_parent, min_neighbor_parent_temp);
 //        printResVec<int><<<1,1>>>(min_neighbor_parent, nrows);
@@ -759,7 +759,7 @@ int main16(int argc, char* argv[])
         // 1) Stochastic hooking.
         // mngf[u] = A x gf
         // mxv
-        bmv16_sparse_full_cc_new<int, int><<<grid_new, 1024>>>(tA, grandparent, min_neighbor_parent_temp, bsrRowPtr, bsrColInd, nblockrows);
+        bmv16_sparse_full_cc_new_2<int, int><<<grid_new, 1024>>>(tA, grandparent, min_neighbor_parent_temp, bsrRowPtr, bsrColInd, nblockrows);
 //        printResVec<int><<<1,1>>>(min_neighbor_parent_temp, nrows);
         ewiseMin<<<(int)ceil(nrows/1024.0), 1024>>>(min_neighbor_parent, nrows, min_neighbor_parent, min_neighbor_parent_temp);
 //        printResVec<int><<<1,1>>>(min_neighbor_parent, nrows);
@@ -1099,13 +1099,6 @@ int main32(int argc, char* argv[])
 
     // free storage
     cudaFree(tA);
-
-#ifdef VERBOSE
-//    printf("result_bsrbmv32: \n"); printResVec<float><<<1,1>>>(fC, nrows);
-//    printf("result_bsrbmv32-bin: \n"); printBin32Vec<<<1,1>>>(tC, nblockrows);
-//    verify32BinResVec<<<1,1>>>(tC, fC, nblockrows);
-//    printf("bsrbmv32 nnz in vec: %d\n", countNnzinVec<float>(result_bsrbmv32, nrows));
-#endif
 
     //============================================= check result
     printf("BSR BMV-32-bin: %.3lf\n", bmvbin32_time);

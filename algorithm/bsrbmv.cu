@@ -1363,7 +1363,6 @@ __global__ void resetErrorptr(float* errorptr) {
 // cc.cu
 //======================================================================================
 // bin (A) * full (B) = full (C)
-// 512 trd per warp
 template <typename Index, typename T>
 __global__ void bmv4_sparse_full_cc(const uchar* __restrict__ A, const T* __restrict__ B, T* C,
                                     const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
@@ -1453,7 +1452,6 @@ __global__ void bmv4_sparse_full_cc_new(const uchar* __restrict__ A, const T* __
                 T* Csub = &(C[bx*4*32]);
                 T sum = 2147483647;
 
-                #pragma unroll
                 for(int i=0; i<((load+32-1)/32)*32; i+=32) {
                     ushort a0 = i*4+(laneid/4)*16+(laneid%4) < load*4 ? Asub[i*4+(laneid/4)*16+(laneid%4)] : 0; // 0000 xxxx
                     ushort a1 = i*4+(laneid/4)*16+4+(laneid%4) < load*4 ? Asub[i*4+(laneid/4)*16+4+(laneid%4)] : 0;
@@ -1461,10 +1459,87 @@ __global__ void bmv4_sparse_full_cc_new(const uchar* __restrict__ A, const T* __
                     ushort a3 = i*4+(laneid/4)*16+12+(laneid%4) < load*4 ? Asub[i*4+(laneid/4)*16+12+(laneid%4)] : 0;
                     ushort r0 = a0 << 12 | a1 << 8 | a2 << 4 | a3;
 
-                    shared_B[warpid*128+laneid*4] = i+laneid < load ? Bsub[(colindsub[i+laneid])*4] : 0;
-                    shared_B[warpid*128+laneid*4+1] = i+laneid < load ? Bsub[(colindsub[i+laneid])*4+1] : 0;
-                    shared_B[warpid*128+laneid*4+2] = i+laneid < load ? Bsub[(colindsub[i+laneid])*4+2] : 0;
-                    shared_B[warpid*128+laneid*4+3] = i+laneid < load ? Bsub[(colindsub[i+laneid])*4+3] : 0;
+                    store128((void*)&shared_B[warpid*128+laneid*4],
+                            (i+laneid < load ? Bsub[(colindsub[i+laneid])*4] : 0),
+                            (i+laneid < load ? Bsub[(colindsub[i+laneid])*4+1] : 0),
+                            (i+laneid < load ? Bsub[(colindsub[i+laneid])*4+2] : 0),
+                            (i+laneid < load ? Bsub[(colindsub[i+laneid])*4+3] : 0));
+                    __syncthreads();
+
+                    #pragma unroll
+                    for(int j=0; j<16; j++) { // select the minimum along the nnz product
+                        if ((r0>>(15-j))&0x1) sum = min(sum, shared_B[warpid*128+(laneid/4)*16+j]);
+                    }
+                }
+
+                // store
+                atomicMin(Csub+warpid*4+laneid%4, sum);
+            }
+        }
+    }
+}
+
+template <typename Index, typename T>
+__global__ void bmv4_sparse_full_cc_new_2(const uchar* __restrict__ A, const T* __restrict__ B, T* C,
+                                          const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*32 <= nblockrows) {
+        __shared__ T shared_B[128*32]; // 32 * 4 T = 128
+
+        GET_LANEID;
+        const unsigned warpid = (tid >> 5);
+        int row = bx*32+tid/32;
+
+        if (row<nblockrows) {
+
+            int row_start, row_end, load=0;
+            row_start = rowptr[row];
+            row_end = rowptr[row+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const uchar* Asub = &(A[row_start*4]);
+                const T* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*4*32]);
+                T sum = 2147483647;
+
+                int i;
+                for(i=0; i<((load+32-1)/32)*32-32; i+=32) {
+                    ushort a0 = Asub[i*4+(laneid/4)*16+(laneid%4)];
+                    ushort a1 = Asub[i*4+(laneid/4)*16+4+(laneid%4)];
+                    ushort a2 = Asub[i*4+(laneid/4)*16+8+(laneid%4)];
+                    ushort a3 = Asub[i*4+(laneid/4)*16+12+(laneid%4)];
+                    ushort r0 = a0 << 12 | a1 << 8 | a2 << 4 | a3;
+
+                    store128((void*)&shared_B[warpid*128+laneid*4],
+                            (Bsub[(colindsub[i+laneid])*4]),
+                            (Bsub[(colindsub[i+laneid])*4+1]),
+                            (Bsub[(colindsub[i+laneid])*4+2]),
+                            (Bsub[(colindsub[i+laneid])*4+3]));
+                    __syncthreads();
+
+                    #pragma unroll
+                    for(int j=0; j<16; j++) { // select the minimum along the nnz product
+                        if ((r0>>(15-j))&0x1) sum = min(sum, shared_B[warpid*128+(laneid/4)*16+j]);
+                    }
+                }
+
+                {
+                    ushort a0 = i*4+(laneid/4)*16+(laneid%4) < load*4 ? Asub[i*4+(laneid/4)*16+(laneid%4)] : 0;
+                    ushort a1 = i*4+(laneid/4)*16+4+(laneid%4) < load*4 ? Asub[i*4+(laneid/4)*16+4+(laneid%4)] : 0;
+                    ushort a2 = i*4+(laneid/4)*16+8+(laneid%4) < load*4 ? Asub[i*4+(laneid/4)*16+8+(laneid%4)] : 0;
+                    ushort a3 = i*4+(laneid/4)*16+12+(laneid%4) < load*4 ? Asub[i*4+(laneid/4)*16+12+(laneid%4)] : 0;
+                    ushort r0 = a0 << 12 | a1 << 8 | a2 << 4 | a3;
+
+                    store128((void*)&shared_B[warpid*128+laneid*4],
+                            (i+laneid < load ? Bsub[(colindsub[i+laneid])*4] : 0),
+                            (i+laneid < load ? Bsub[(colindsub[i+laneid])*4+1] : 0),
+                            (i+laneid < load ? Bsub[(colindsub[i+laneid])*4+2] : 0),
+                            (i+laneid < load ? Bsub[(colindsub[i+laneid])*4+3] : 0));
                     __syncthreads();
 
                     #pragma unroll
@@ -1585,10 +1660,11 @@ __global__ void bmv8_sparse_full_cc_new(const uchar* __restrict__ A, const T* __
                     unsigned a3 = i*8+(laneid/8)*32+24+(laneid%8) < load*8 ? Asub[i*8+(laneid/8)*32+24+(laneid%8)] : 0;
                     unsigned r0 = a0 << 24 | a1 << 16 | a2 << 8 | a3;
 
-                    shared_B[warpid*128+(laneid/2)*8+laneid%2] = i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+laneid%2] : 0;
-                    shared_B[warpid*128+(laneid/2)*8+2+laneid%2] = i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+2+laneid%2] : 0;
-                    shared_B[warpid*128+(laneid/2)*8+4+laneid%2] = i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+4+laneid%2] : 0;
-                    shared_B[warpid*128+(laneid/2)*8+6+laneid%2] = i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+6+laneid%2] : 0;
+                    store128((void*)&shared_B[warpid*128+(laneid/2)*8+(laneid%2)*4],
+                            (i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4] : 0),
+                            (i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4+1] : 0),
+                            (i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4+2] : 0),
+                            (i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4+3] : 0));
                     __syncthreads();
 
                     #pragma unroll
@@ -1605,7 +1681,83 @@ __global__ void bmv8_sparse_full_cc_new(const uchar* __restrict__ A, const T* __
     }
 }
 
-//16 baseline (not fully utilized)
+template <typename Index, typename T>
+__global__ void bmv8_sparse_full_cc_new_2(const uchar* __restrict__ A, const T* __restrict__ B, T* C,
+                                        const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*32 <= nblockrows) {
+        __shared__ T shared_B[128*32]; // 16 * 8 T = 128
+
+        GET_LANEID;
+        const unsigned warpid = (tid >> 5);
+        int row = bx*32+tid/32;
+
+        if (row<nblockrows) {
+            int row_start, row_end, load=0;
+            row_start = rowptr[row];
+            row_end = rowptr[row+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const uchar* Asub = &(A[row_start*8]);
+                const T* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*8*32]);
+                T sum = 2147483647;
+
+                int i;
+                for(i=0; i<((load+16-1)/16)*16-16; i+=16) {
+                    unsigned a0 = Asub[i*8+(laneid/8)*32+(laneid%8)];
+                    unsigned a1 = Asub[i*8+(laneid/8)*32+8+(laneid%8)];
+                    unsigned a2 = Asub[i*8+(laneid/8)*32+16+(laneid%8)];
+                    unsigned a3 = Asub[i*8+(laneid/8)*32+24+(laneid%8)];
+                    unsigned r0 = a0 << 24 | a1 << 16 | a2 << 8 | a3;
+
+                    store128((void*)&shared_B[warpid*128+(laneid/2)*8+(laneid%2)*4],
+                            (Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4]),
+                            (Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4+1]),
+                            (Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4+2]),
+                            (Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4+3]));
+                    __syncthreads();
+
+                    #pragma unroll
+                    for(int j=0; j<32; j++) { // select the minimum along the nnz product
+                        if ((r0>>(31-j))&0x1) sum = min(sum, shared_B[warpid*128+(laneid/8)*32+j]);
+                    }
+                }
+
+                // less than 16
+                {
+                    unsigned a0 = i*8+(laneid/8)*32+(laneid%8) < load*8 ? Asub[i*8+(laneid/8)*32+(laneid%8)] : 0;
+                    unsigned a1 = i*8+(laneid/8)*32+8+(laneid%8) < load*8 ? Asub[i*8+(laneid/8)*32+8+(laneid%8)] : 0;
+                    unsigned a2 = i*8+(laneid/8)*32+16+(laneid%8) < load*8 ? Asub[i*8+(laneid/8)*32+16+(laneid%8)] : 0;
+                    unsigned a3 = i*8+(laneid/8)*32+24+(laneid%8) < load*8 ? Asub[i*8+(laneid/8)*32+24+(laneid%8)] : 0;
+                    unsigned r0 = a0 << 24 | a1 << 16 | a2 << 8 | a3;
+
+                    store128((void*)&shared_B[warpid*128+(laneid/2)*8+(laneid%2)*4],
+                            (i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4] : 0),
+                            (i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4+1] : 0),
+                            (i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4+2] : 0),
+                            (i+laneid/2 < load ? Bsub[(colindsub[i+laneid/2])*8+(laneid%2)*4+3] : 0));
+                    __syncthreads();
+
+                    #pragma unroll
+                    for(int j=0; j<32; j++) { // select the minimum along the nnz product
+                        if ((r0>>(31-j))&0x1) sum = min(sum, shared_B[warpid*128+(laneid/8)*32+j]);
+                    }
+                }
+
+                // store
+                atomicMin(Csub+warpid*8+laneid%8, sum);
+            }
+        }
+    }
+}
+
+//16 baseline
 template <typename Index, typename T>
 __global__ void bmv16_sparse_full_cc(const ushort* __restrict__ A, const T* __restrict__ B, T* C,
                                     const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
@@ -1709,55 +1861,74 @@ __global__ void bmv16_sparse_full_cc_new(const ushort* __restrict__ A, const T* 
     }
 }
 
-// bin (A) * full (B) = full (C)
-// 512 trd per warp
 template <typename Index, typename T>
-__global__ void bmv32_sparse_full_cc_512(const unsigned* __restrict__ A, const T* __restrict__ B, T* C,
-                                     const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
+__global__ void bmv16_sparse_full_cc_new_2(const ushort* __restrict__ A, const T* __restrict__ B, T* C,
+                                    const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
 {
     const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
     const unsigned tid = threadIdx.x;
 
-    if (bx*16 <= nblockrows) {
-        // compute
+    if (bx*32 <= nblockrows) {
+        __shared__ T shared_B[64*32];
 
-        // load
         GET_LANEID;
         const unsigned warpid = (tid >> 5);
+        int row = bx*32+tid/32;
 
-        if (bx*16+tid/32<nblockrows) {
-
+        if (row<nblockrows) {
             int row_start, row_end, load=0;
-            row_start = rowptr[bx*16+tid/32];
-            row_end = rowptr[bx*16+tid/32+1];
+            row_start = rowptr[row];
+            row_end = rowptr[row+1];
             load = row_end-row_start;
 
             if (load != 0) {
-                const unsigned* Asub = &(A[row_start*32]);
+                const ushort* Asub = &(A[row_start*16]);
                 const T* Bsub = &(B[0]);
                 const int* colindsub = &(colind[row_start]);
-                T* Csub = &(C[bx*512]);
+                T* Csub = &(C[bx*16*32]);
                 T sum = 2147483647;
 
-                #pragma unroll
-                for(int i=0; i<load; i++) {
-                    unsigned r0 = Asub[i*32+laneid];
+                int i;
+                for(i=0; i<((load+4-1)/4)*4-4; i+=4) {
+                    unsigned a0 = Asub[i*16+(laneid/16)*32+(laneid%16)];
+                    unsigned a1 = Asub[i*16+(laneid/16)*32+16+(laneid%16)];
+                    unsigned r0 = a0 << 16 | a1;
+
+                    shared_B[warpid*64+(laneid/8)*16+laneid%8] = Bsub[(colindsub[i+laneid/8])*16+laneid%8];
+                    shared_B[warpid*64+(laneid/8)*16+8+laneid%8] = Bsub[(colindsub[i+laneid/8])*16+8+laneid%8];
+                    __syncthreads();
 
                     #pragma unroll
                     for(int j=0; j<32; j++) { // select the minimum along the nnz product
-                        sum = min(sum, (((r0>>(31-j))&0x1)?(Bsub[(colindsub[i])*32+j]):2147483647));
+                        if ((r0>>(31-j))&0x1) sum = min(sum, shared_B[warpid*64+(laneid/16)*32+j]);
+                    }
+                }
+
+                // less than 4
+                {
+                    unsigned a0 = i*16+(laneid/16)*32+(laneid%16) < load*16 ? Asub[i*16+(laneid/16)*32+(laneid%16)] : 0;
+                    unsigned a1 = i*16+(laneid/16)*32+16+(laneid%16) < load*16 ? Asub[i*16+(laneid/16)*32+16+(laneid%16)] : 0;
+                    unsigned r0 = a0 << 16 | a1;
+
+
+                    shared_B[warpid*64+(laneid/8)*16+laneid%8] = i+laneid/8 < load ? Bsub[(colindsub[i+laneid/8])*16+laneid%8] : 0;
+                    shared_B[warpid*64+(laneid/8)*16+8+laneid%8] = i+laneid/8 < load ? Bsub[(colindsub[i+laneid/8])*16+8+laneid%8] : 0;
+                    __syncthreads();
+
+                    #pragma unroll
+                    for(int j=0; j<32; j++) { // select the minimum along the nnz product
+                        if ((r0>>(31-j))&0x1) sum = min(sum, shared_B[warpid*64+(laneid/16)*32+j]);
                     }
                 }
 
                 // store
-                Csub[warpid*32+laneid] = sum;
+                atomicMin(Csub+warpid*16+laneid%16, sum);
             }
         }
     }
 }
 
-// bin (A) * full (B) = full (C)
-// 1024 trd per warp
+// 32 baseline
 template <typename Index, typename T>
 __global__ void bmv32_sparse_full_cc(const unsigned* __restrict__ A, const T* __restrict__ B, T* C,
                                      const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
@@ -1803,8 +1974,6 @@ __global__ void bmv32_sparse_full_cc(const unsigned* __restrict__ A, const T* __
     }
 }
 
-// bin (A) * full (B) = full (C)
-// 1024 thrd per warp <-- best
 template <typename Index, typename T>
 __global__ void bmv32_sparse_full_cc_new(const unsigned* __restrict__ A, const T* __restrict__ B, T* C,
                                      const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
@@ -1843,7 +2012,82 @@ __global__ void bmv32_sparse_full_cc_new(const unsigned* __restrict__ A, const T
                     #pragma unroll
                     for(int j=0; j<32; j++) { // select the minimum along the nnz product
                         if ((r0>>(31-j))&0x1) sum = min(sum, shared_B[warpid*32+j]);
-                        //sum = min(sum, (((r0>>(31-j))&0x1)?(shared_B[warpid*32+j]):2147483647));
+                    }
+                }
+
+                // store
+                Csub[warpid*32+laneid] = sum;
+            }
+        }
+    }
+}
+
+// not faster
+template <typename Index, typename T>
+__global__ void bmv32_sparse_full_cc_fullshared(const unsigned* __restrict__ A, const T* __restrict__ B, T* C,
+                                     const Index* __restrict__ rowptr, const Index* __restrict__ colind, const Index nblockrows)
+{
+    const unsigned bx = blockIdx.x * gridDim.x * gridDim.y + blockIdx.y * gridDim.y + blockIdx.z;
+    const unsigned tid = threadIdx.x;
+
+    if (bx*32 <= nblockrows) {
+        // load vector to shared
+        __shared__ T shared_B[32*32*8]; // 4B * 1024 = 4 KB ==> can be 32 KB (or 48 KB for 1 tb)
+                                      // ==> can have 8 (12) blockrow together
+
+        GET_LANEID;
+        const unsigned warpid = (tid >> 5);
+
+        if (bx*32+tid/32<nblockrows) {
+
+            int row_start, row_end, load=0;
+            row_start = rowptr[bx*32+tid/32];
+            row_end = rowptr[bx*32+tid/32+1];
+            load = row_end-row_start;
+
+            if (load != 0) {
+                const unsigned* Asub = &(A[row_start*32]);
+                const T* Bsub = &(B[0]);
+                const int* colindsub = &(colind[row_start]);
+                T* Csub = &(C[bx*1024]);
+                T sum = 2147483647;
+
+                int i=0;
+                for(i=0; i<((load+8-1)/8)*8-8; i+=1) {
+                    unsigned r0 = Asub[i*32+laneid];
+
+                    // save 8 * 32 T
+                    if (i%8 == 0) {
+                        store128((void*)&shared_B[warpid*32*8+(laneid/4)*32+(laneid%4)*8],
+                                (Bsub[(colindsub[i+laneid/4])*32+(laneid%4)*8]),
+                                (Bsub[(colindsub[i+laneid/4])*32+(laneid%4)*8+1]),
+                                (Bsub[(colindsub[i+laneid/4])*32+(laneid%4)*8+2]),
+                                (Bsub[(colindsub[i+laneid/4])*32+(laneid%4)*8+3]));
+                        store128((void*)&shared_B[warpid*32*8+(laneid/4)*32+(laneid%4)*8+4],
+                                (Bsub[(colindsub[i+laneid/4])*32+(laneid%4)*8+4]),
+                                (Bsub[(colindsub[i+laneid/4])*32+(laneid%4)*8+5]),
+                                (Bsub[(colindsub[i+laneid/4])*32+(laneid%4)*8+6]),
+                                (Bsub[(colindsub[i+laneid/4])*32+(laneid%4)*8+7]));
+
+                         __syncthreads();
+                    }
+
+                    #pragma unroll
+                    for(int j=0; j<32; j++) { // select the minimum along the nnz product
+                        if (r0>>(31-j)&0x1) sum = min(sum, shared_B[warpid*32*8+(i%8)*32+j]);
+                    }
+                } // for
+
+                // roll back to original
+                for(; i<load; i++) {
+                    unsigned r0 = Asub[i*32+laneid];
+
+                    shared_B[warpid*32*8+laneid] = Bsub[(colindsub[i])*32+laneid]; // only use the first 32
+                    __syncthreads();
+
+                    #pragma unroll
+                    for(int j=0; j<32; j++) { // select the minimum along the nnz product
+                        if ((r0>>(31-j))&0x1) sum = min(sum, shared_B[warpid*32*8+j]);
                     }
                 }
 
